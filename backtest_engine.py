@@ -16,7 +16,7 @@ from portfolio.account import Account
 from broker.match_engine import MatchEngine
 from broker.rollover import MainContractRollover
 from analyzer.performance import StrategyAnalyzer
-from config import build_query_symbol
+from config import build_query_symbol, FEE_DICT, pure_product_code
 
 
 def extract_bar_data(row, columns_level_1):
@@ -226,17 +226,69 @@ def run_backtest(
             'rollover_commission': rollover_commission,
         }
 
+        # 构建回测参数描述表
+        slippage_ticks = 1 # 当前默认滑点为 1 跳
+
+        if strat_sym.upper() == 'MULTI' and isinstance(symbols_input, list):
+            # ==========================================
+            # 🌟 多品种组合逻辑
+            # ==========================================
+            fee_str = "多品种独立费率 (详见 Config)"
+            
+            # 动态拼接每个品种真实的保证金率
+            margin_list = []
+            for sym in symbols_input:
+                p_code = pure_product_code(sym)
+                rate = FEE_DICT.get(p_code, {}).get('margin_rate', 0)
+                margin_list.append(f"{p_code.upper()}:{rate*100:.0f}%")
+            margin_str = ", ".join(margin_list)
+            
+        else:
+            # ==========================================
+            # 🌟 单品种逻辑
+            # ==========================================
+            p_code = pure_product_code(strat_sym)
+            meta = FEE_DICT.get(p_code) or FEE_DICT.get(p_code.upper()) or {}
+            
+            fee_type = meta.get('fee_type', 'ratio')
+            fee_open = meta.get('fee_open', 0)
+            fee_close_h = meta.get('fee_close_history', 0)
+            fee_close_t = meta.get('fee_close_today', 0)
+            
+            if fee_type == 'ratio':
+                fee_str = f"开仓{float(fee_open)*10000:.1f}‱ / 平昨{float(fee_close_h)*10000:.1f}‱ / 平今{float(fee_close_t)*10000:.1f}‱"
+            else:
+                fee_str = f"开仓{float(fee_open):.1f}元 / 平昨{float(fee_close_h):.1f}元 / 平今{float(fee_close_t):.1f}元"
+                
+            margin_rate = meta.get('margin_rate', 0.0)
+            margin_str = f"{margin_rate * 100:.1f}%"
+
+        # 组装最终呈现的字典
+        describe_params = {
+            '数据周期': freq,
+            '回测区间': f"{str(start_date).split()[0]} 至 {str(end_date).split()[0]}",
+            '初始资金': f"￥{initial_capital:,.2f}",
+            '回测品种': strat_sym.upper(),
+            '手续费设置': fee_str,
+            '滑点设置': f"{slippage_ticks} 跳",
+            '保证金率': margin_str
+        }
+
+
         analyzer = StrategyAnalyzer(
             trades=broker.trade_history,
-            price_df=price_df,
-            initial_capital=account.initial_capital,
+            price_df=df,
+            initial_capital=initial_capital,
             symbol=strat_sym,
             freq=freq,
             strategy_name=strategy_class.__name__,
             account_summary=account_summary,
-            equity_df=equity_df,
+            equity_df=pd.DataFrame(equity_records),
+            describe_params=describe_params
         )
         analyzer.generate_report()
+
+        return analyzer  # 💥 加上这一行！把算好的数据引擎交还给外部！
     else:
         print("[Engine] 回测期间无交易记录产生。")
 

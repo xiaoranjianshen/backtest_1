@@ -169,7 +169,11 @@ class StrategyAnalyzer:
             eq = self.equity_df.sort_values('datetime').drop_duplicates('datetime', keep='last')
             equity_curve = eq.set_index('datetime')['equity']
             daily_equity = equity_curve.resample('D').last().ffill().dropna()
-            daily_returns = daily_equity.pct_change().dropna()
+
+            # 💥 核心修复：不使用动态 pct_change，而是计算绝对每日盈亏差值，再除以固定的初始资金
+            daily_pnl_abs = daily_equity.diff().dropna()
+            daily_returns = daily_pnl_abs / self.initial_capital
+
             final_equity = float(daily_equity.iloc[-1])
             max_open_value = float((eq['equity'] * 0.15).max()) if 'equity' in eq.columns else 0.0
         else:

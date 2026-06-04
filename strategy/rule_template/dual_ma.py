@@ -5,17 +5,19 @@
 from strategy.rule_template.rule import RuleTemplate
 
 
-class DualMAStrategy(RuleTemplate):
-    # 💥 把 fixed_volume 和 capital_pct 作为可选参数暴露出来
-    def __init__(self, broker, account, symbol, fast_window=10, slow_window=30,
-                 fixed_volume=None, capital_pct=None):
+class DualMAStrategy(RuleStrategy):  # 或者你的其他基类名
+    def __init__(self, broker, account, symbol, fast_window=10, slow_window=30, fixed_volume=None, capital_pct=None):
+        # 如果你的基类接受 symbol，请这样传：
+        # super().__init__(broker, account, symbol)
 
-        # 抛给父类去处理仓位路由
-        super().__init__(broker, account, symbol, warmup_bars=slow_window,
-                         fixed_volume=fixed_volume, capital_pct=capital_pct)
+        # 如果基类不接受，或者你没写 super，请务必在这里显式绑定：
+        super().__init__(broker, account)
+        self.symbol = symbol  # 💥 就是漏了这一行！把传进来的参数存为自身属性
 
         self.fast_window = fast_window
         self.slow_window = slow_window
+        self.fixed_volume = fixed_volume
+        self.capital_pct = capital_pct
 
     def calculate_signal(self, bar: dict) -> int:
         """

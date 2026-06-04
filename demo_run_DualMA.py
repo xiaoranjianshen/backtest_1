@@ -40,8 +40,8 @@ STRATEGY_KWARGS = {'fast_window': 10, 'slow_window': 30, 'capital_pct': 0.10}
 if __name__ == "__main__":
     print("[Runner] 正在初始化单品种规则回测任务...")
 
-
-    run_backtest(
+    # 💥 1. 必须用变量接住引擎吐出的分析器
+    analyzer = run_backtest(
         strategy_class=STRATEGY_CLASS,
         symbols_input=TARGET_SYMBOL,
         start_date=START_DATE,
@@ -51,3 +51,7 @@ if __name__ == "__main__":
         initial_capital=INITIAL_CAPITAL,
         strategy_kwargs=STRATEGY_KWARGS
     )
+
+    # 💥 2. 扔给前端工厂自动渲染
+    from frontend_index import build_html_dashboard
+    build_html_dashboard(analyzer)

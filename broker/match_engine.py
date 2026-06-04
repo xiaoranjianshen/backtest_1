@@ -43,22 +43,31 @@ class MatchEngine:
         td_vol = pos_info.get('td_volume', 0)
 
         if order.offset == Offset.CLOSE:
-            # 计算总持仓
+            # ---- 平仓保护：如果持仓不足，截断到实际持仓 ----
             total_pos = yd_vol + td_vol
 
-            if total_pos < order.volume:
-                # 持仓不足，打印警告
-                print(f"⚠️ [Broker] 平仓{order.volume}手，但实际持仓仅{total_pos}手(昨:{yd_vol} 今:{td_vol})")
-                if total_pos == 0:
-                    order.status = OrderStatus.REJECTED
-                    return
+            if total_pos == 0:
+                # 无任何持仓，直接拒绝
+                order.status = OrderStatus.REJECTED
+                return
 
+            if total_pos < order.volume:
+                # 持仓不够，按现有持仓量平仓，并给出警告
+                print(
+                    f"⚠️ [Broker] 平仓{order.volume}手，实际持仓仅{total_pos}手"
+                    f"(昨:{yd_vol} 今:{td_vol})，截断为{total_pos}手"
+                )
+                order.volume = total_pos
+                # 注意：这里 order 是可变对象，修改 volume 会影响调用方，按需深拷贝
+
+            # ---- 智能路由：优先平昨，再平今 ----
             if yd_vol >= order.volume:
-                # 昨仓足够，直接平昨
+                # 昨仓足够，全部平昨
                 order.offset = Offset.CLOSE
                 self._enqueue_order(order, reference_price)
+
             elif yd_vol > 0:
-                # 昨仓部分，先平昨再平今
+                # 昨仓部分 + 今仓部分：拆成两单
                 order1 = dataclasses.replace(order, volume=yd_vol, offset=Offset.CLOSE)
                 order2 = dataclasses.replace(
                     order,
@@ -66,26 +75,19 @@ class MatchEngine:
                     offset=Offset.CLOSE_TODAY,
                     order_id=f"ORD_{uuid.uuid4().hex[:8]}",
                 )
-                ok1 = self._enqueue_order(order1, reference_price)
-                ok2 = self._enqueue_order(order2, reference_price)
-                # _enqueue_order 返回 False 时订单未入队，无需 remove
-                # 检查是否真的入队了再 remove（防止误操作）
-                if not ok1 and order1 in self.pending_orders:
-                    self.pending_orders.remove(order1)
-                if not ok2 and order2 in self.pending_orders:
-                    self.pending_orders.remove(order2)
-                elif ok2:
-                    # ok2 为 True 时，才标记原 order 的 offset 并入队
-                    order.offset = Offset.CLOSE_TODAY
-                    self._enqueue_order(order, reference_price)
+                # 直接入队两个子订单，原始 order 丢弃
+                self._enqueue_order(order1, reference_price)
+                self._enqueue_order(order2, reference_price)
+
             elif td_vol > 0:
-                # 只有今仓，平今
+                # 只有今仓，全部平今
                 order.offset = Offset.CLOSE_TODAY
                 self._enqueue_order(order, reference_price)
-            else:
-                # 没有持仓，拒绝
-                order.status = OrderStatus.REJECTED
+
+            # 注意：经过前面 total_pos==0 的提前返回，这里不可能 total_pos==0
+
         else:
+            # 开仓或其他非平仓指令，直接送入队列
             self._enqueue_order(order, reference_price)
 
     def cancel_order(self, order_id: str) -> bool:

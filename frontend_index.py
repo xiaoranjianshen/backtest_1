@@ -10,7 +10,7 @@ def build_html_dashboard(analyzer):
         return
     print("🎨 [前端工厂] 正在组装全屏垂直瀑布流看板...")
 
-    # 1. 提取基础图表
+    # 1. 从 analyzer 提取基础图表 HTML 代码块
     html_metrics = analyzer.get_metrics_table_html()
     html_params = analyzer.get_params_table_html()
     html_fig_eq = analyzer.get_equity_html_div()
@@ -25,7 +25,7 @@ def build_html_dashboard(analyzer):
     html_fig_pnl_dist = analyzer.get_pnl_distribution_html_div()
     html_fig_period_ret = analyzer.get_period_returns_html_div()
 
-    # 2. 提取并组装【交互式复盘字典】(Tab 3 顶部)
+    # 2. 提取并组装【交互式复盘中心】(Tab 3 顶部)
     replay_dicts = analyzer.get_replay_charts_dict() if hasattr(analyzer, 'get_replay_charts_dict') else {}
     html_replay_section = ""
     if replay_dicts:
@@ -61,7 +61,7 @@ def build_html_dashboard(analyzer):
         </div>
         """
 
-    # 3. 提取交易流水表
+    # 3. 提取交易流水表 (Trades Log)
     if hasattr(analyzer, 'match_df') and not analyzer.match_df.empty:
         df_t = analyzer.match_df[
             ['open_time', 'close_time', 'symbol', 'direction', 'volume', 'open_price', 'close_price', 'net_pnl',
@@ -84,7 +84,7 @@ def build_html_dashboard(analyzer):
 
         html_trades = f"""
             <div class="flex justify-between items-center bg-gray-50 p-4 border-b border-gray-200">
-                <div class="text-gray-600 text-sm">共检测到 <span class="font-bold text-gray-800">{total_trades}</span> 条交易明细。</div>
+                <div class="text-gray-600 text-sm">共检测到 <span class="font-bold text-gray-800">{total_trades}</span> 条交易明细。为保证网页性能，面板仅渲染前 1000 条。</div>
                 <a href="{csv_filename}" download class="flex items-center space-x-2 bg-[#1e3a8a] hover:bg-blue-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm">
                     <span>下载全量数据 (CSV)</span>
                 </a>
@@ -94,7 +94,7 @@ def build_html_dashboard(analyzer):
     else:
         html_trades = "<p class='p-4 text-gray-500'>无交易流水</p>"
 
-    # 4. 提取资金流表
+    # 4. 提取资金流表 (Fund Flow)
     df_funds = analyzer.get_fund_flow_df() if hasattr(analyzer, 'get_fund_flow_df') else pd.DataFrame()
     if not df_funds.empty:
         csv_funds_filename = 'fund_flow_full.csv'
@@ -113,7 +113,7 @@ def build_html_dashboard(analyzer):
 
         html_funds = f"""
             <div class="flex justify-between items-center bg-gray-50 p-4 border-b border-gray-200">
-                <div class="text-gray-600 text-sm">共检测到 <span class="font-bold text-gray-800">{total_funds}</span> 条资金流记录。</div>
+                <div class="text-gray-600 text-sm">共检测到 <span class="font-bold text-gray-800">{total_funds}</span> 条资金流记录。为保证网页性能，面板仅渲染前 1000 条。</div>
                 <a href="{csv_funds_filename}" download class="flex items-center space-x-2 bg-teal-600 hover:bg-teal-700 text-white px-5 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm">
                     <span>下载资金流表 (CSV)</span>
                 </a>
@@ -154,7 +154,6 @@ def build_html_dashboard(analyzer):
                 activeBtn.classList.add('bg-white', 'text-[#1e3a8a]', 'font-bold');
                 window.dispatchEvent(new Event('resize')); 
             }}
-            // 新增：单品种复盘切片 JS 逻辑
             function switchReplay(sym) {{
                 document.querySelectorAll('.replay-content').forEach(el => el.style.display = 'none');
                 document.querySelectorAll('.replay-btn').forEach(el => {{
@@ -187,24 +186,63 @@ def build_html_dashboard(analyzer):
         <div class="max-w-screen-2xl mx-auto p-6">
 
             <div id="tab1" class="tab-content active space-y-6">
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_params}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-1"><div class="w-full">{html_metrics}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_eq}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_cum}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_nv_bench}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_dd}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_leverage}</div></div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-[#1e3a8a] pl-3 mb-4">回测配置</h2>
+                    <div class="w-full">{html_params}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-1">
+                    <div class="w-full">{html_metrics}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-[#1e3a8a] pl-3 mb-2">动态资金曲线 (Interactive)</h2>
+                    <div class="w-full">{html_fig_eq}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-red-500 pl-3 mb-2">累计盈亏与摩擦</h2>
+                    <div class="w-full">{html_fig_cum}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-[#8b5cf6] pl-3 mb-2">净值表现与基准对比</h2>
+                    <div class="w-full">{html_fig_nv_bench}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-red-600 pl-3 mb-2">历史滚动回撤 (Rolling Drawdown)</h2>
+                    <div class="w-full">{html_fig_dd}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-slate-900 pl-3 mb-2">组合隔夜持仓敞口与杠杆率双轴监控 (Portfolio Leverage)</h2>
+                    <div class="w-full">{html_fig_leverage}</div>
+                </div>
             </div> 
 
             <div id="tab2" class="tab-content space-y-6">
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_pnl_bar}</div></div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-[#1e3a8a] pl-3 mb-2">多品种横截面净盈亏排序 (Alpha Contribution)</h2>
+                    <div class="w-full">{html_fig_pnl_bar}</div>
+                </div>
                 <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
-                    <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_holding_pie}</div></div>
-                    <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_turnover_pie}</div></div>
+                    <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-blue-600 pl-3 mb-4">资产持仓周期透视 (Holding Cycles)</h2>
+                        <div class="w-full flex justify-center">{html_fig_holding_pie}</div>
+                    </div>
+                    <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-emerald-500 pl-3 mb-4">品种成交额占比 (Turnover Weight)</h2>
+                        <div class="w-full flex justify-center">{html_fig_turnover_pie}</div>
+                    </div>
                 </div> 
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_pnl_curves}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_pnl_dist}</div></div>
-                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4"><div class="w-full">{html_fig_period_ret}</div></div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-purple-600 pl-3 mb-2">多品种盈亏曲线簇 (Asset PnL Cluster)</h2>
+                    <p class="text-xs text-gray-400 mb-2 pl-3">💡 提示：点击图例可以动态隐藏/显示特定品种曲线。</p>
+                    <div class="w-full">{html_fig_pnl_curves}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-orange-500 pl-3 mb-2">逐笔极值盈亏分位数 (Quantile Distribution)</h2>
+                    <div class="w-full">{html_fig_pnl_dist}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-teal-500 pl-3 mb-2">多周期收益日历 (Period Returns)</h2>
+                    <div class="w-full">{html_fig_period_ret}</div>
+                </div>
             </div> 
 
             <div id="tab3" class="tab-content space-y-6">

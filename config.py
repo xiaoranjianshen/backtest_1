@@ -7,10 +7,9 @@ import re
 # ------------------------------------------
 # 1. 基础设施配置 (Infrastructure)
 # ------------------------------------------
-CH_HOST = 'localhost'
-# 192.168.100.23
-CH_USER = 'default'
-CH_PASS = ''
+CH_HOST = '192.168.99.12'
+CH_USER = 'luohaoran'
+CH_PASS = 'lhr.2026'
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')
@@ -54,24 +53,24 @@ CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')
 # 结构: freq -> data_type -> {'db': 数据库名, 'table': 表名}
 DB_ROUTING_MAP = {
     'tick': {
-        'main': {'db': 'main_contract_tick_data', 'table': 'main_tick'},
-        'all':  {'db': 'tick_data', 'table': 'tick_all_data'}
+        'main': {'db': 'futures_data', 'table': 'main_tick'},
+        'all':  {'db': 'futures_data', 'table': 'tick_all_data'}
     },
     '1m': {
-        'main':     {'db': 'adjusted_im_1_5_min', 'table': 'futures_main_1m'},
-        'main_adj': {'db': 'adjusted_im_1_5_min', 'table': 'futures_main_1m_adj'},
-        'index':    {'db': 'adjusted_im_1_5_min', 'table': 'futures_index_1m'},
-        'all':      {'db': 'adjusted_im_1_5_min', 'table': 'futures_all_1m'}
+        'main':     {'db': 'futures_data', 'table': 'futures_main_1m'},
+        'main_adj': {'db': 'futures_data', 'table': 'futures_main_1m_adj'},
+        'index':    {'db': 'futures_data', 'table': 'futures_index_1m'},
+        'all':      {'db': 'futures_data', 'table': 'futures_all_1m'}
     },
     '5m': {
-        'main':     {'db': 'adjusted_im_1_5_min', 'table': 'futures_main_5m'},
-        'index':    {'db': 'adjusted_im_1_5_min', 'table': 'futures_index_5m'},
-        'all':      {'db': 'adjusted_im_1_5_min', 'table': 'futures_all_5m'}
+        'main':     {'db': 'futures_data', 'table': 'futures_main_5m'},
+        'index':    {'db': 'futures_data', 'table': 'futures_index_5m'},
+        'all':      {'db': 'futures_data', 'table': 'futures_all_5m'}
     },
     '1d': {
-        'main':  {'db': 'i_contract_daily_data', 'table': 'm_daily'},
-        'index': {'db': 'i_contract_daily_data', 'table': 'i_daily'},
-        'all':   {'db': 'large_timeframe_data', 'table': 'day1_data'}
+        'main':  {'db': 'futures_data', 'table': 'm_daily'},
+        'index': {'db': 'futures_data', 'table': 'i_daily'},
+        'all':   {'db': 'futures_data', 'table': 'day1_data'}
     }
 }
 

@@ -23,26 +23,29 @@ from config import SYMBOL_DICT
 # =========================================================================
 
 # 1. 📂 目标导出文件夹路径
-EXPORT_DIR = r"C:\clickhouse_download"
+EXPORT_DIR = os.path.join(current_dir, "exports")
 
 # 2. 📊 选择导出频率 (freq) —— 【只能从以下选项中选一个，取消对应的注释即可】
-FREQ = '1m'
+FREQ = 'tick'
 # FREQ = '5m'
 # FREQ = '1d'
 # FREQ = 'tick'
 
-# 3. 🎯 选择数据形态 (data_type) —— 【只能从以下选项中选一个】
-DATA_TYPE = 'main_adj'  #  主力连续【等比复权表】(含 month_change)
+# 3. 🎯 选择数据形态 (data_type) —— 当前默认导出全市场明细合约底表
+DATA_TYPE = 'all'
+# DATA_TYPE = 'main_adj'  # 主力连续【等比复权表】(含 month_change)
 # DATA_TYPE = 'main'      # 主力连续【未复权真实价格表】
 # DATA_TYPE = 'index'     # 指数连续曲线表
-# DATA_TYPE = 'all'       # 全市场明细单月合约底表
 
-# 4. ⚔️ 选择要导出的品种组合 —— 【三种模式，任选一种，其余注释掉】
-# 模式 A：全市场所有品种一次性全部导出
-# SELECTED_SYMBOLS = [f"KQ.m@{attr[2]}.{code}" for code, attr in SYMBOL_DICT.items()]
+# 4. ⚔️ 选择要导出的品种组合 —— 当前默认导出全市场全品种
+# 可选: 'all' / 'custom' / 'sector'
+SYMBOL_SELECTION_MODE = 'all'
 
-# 模式 B：自定义指定品种组合
-INPUT_SYMBOLS = ['rb', 'I', 'TA605', 'rb2410']
+# 模式 A：全市场所有品种一次性全部导出（当前启用）
+# 模式 B：自定义指定品种组合（需要时再打开 custom）
+#INPUT_SYMBOLS = ['rb', 'I', 'TA605', 'rb2410']
+# 模式 C：按照板块筛选导出（需要时再打开 sector）
+#TARGET_SECTOR = '黑色'
 
 # 💥 核心修复：在内存中构建一个“全小写键”的影子字典，彻底免疫大小写问题
 LOWER_SYMBOL_DICT = {k.lower(): v for k, v in SYMBOL_DICT.items()}
@@ -50,47 +53,91 @@ LOWER_SYMBOL_DICT = {k.lower(): v for k, v in SYMBOL_DICT.items()}
 SELECTED_SYMBOLS = []
 import re
 
-for sym in INPUT_SYMBOLS:
-    raw_input = sym.lower()
-
-    # 1. 嗅探是否带有具体月份数字
-    match = re.match(r"^([a-z]+)(\d+)$", raw_input)
-
-    if match:
-        pure_code = match.group(1)
-        # 💥 替换为 LOWER_SYMBOL_DICT
-        if pure_code in LOWER_SYMBOL_DICT:
-            exchange = LOWER_SYMBOL_DICT[pure_code][2]
-            SELECTED_SYMBOLS.append(f"{exchange}.{raw_input}")
-        else:
-            print(f"⚠️ 警告: 找不到 '{pure_code}' 的交易所映射，已跳过 {sym}。")
-
+if SYMBOL_SELECTION_MODE == 'all':
+    if DATA_TYPE == 'index':
+        prefix = 'KQ.i@'
+    elif DATA_TYPE in ['main', 'main_adj']:
+        prefix = 'KQ.m@'
     else:
-        # 💥 替换为 LOWER_SYMBOL_DICT
-        if raw_input in LOWER_SYMBOL_DICT:
-            exchange = LOWER_SYMBOL_DICT[raw_input][2]
+        prefix = ''
+    SELECTED_SYMBOLS = [f"{prefix}{attr[2]}.{code}" for code, attr in SYMBOL_DICT.items()]
+elif SYMBOL_SELECTION_MODE == 'custom':
+    input_symbols = globals().get('INPUT_SYMBOLS', [])
+    for sym in input_symbols:
+        raw_input = sym.lower()
 
-            if DATA_TYPE == 'index':
-                prefix = "KQ.i@"
-            elif DATA_TYPE in ['main', 'main_adj']:
-                prefix = "KQ.m@"
+        # 1. 嗅探是否带有具体月份数字
+        match = re.match(r"^([a-z]+)(\d+)$", raw_input)
+
+        if match:
+            pure_code = match.group(1)
+            if pure_code in LOWER_SYMBOL_DICT:
+                exchange = LOWER_SYMBOL_DICT[pure_code][2]
+                SELECTED_SYMBOLS.append(f"{exchange}.{raw_input}")
             else:
-                prefix = ""
+                print(f"⚠️ 警告: 找不到 '{pure_code}' 的交易所映射，已跳过 {sym}。")
 
-            SELECTED_SYMBOLS.append(f"{prefix}{exchange}.{raw_input}")
         else:
-            print(f"⚠️ 警告: 品种 '{sym}' 未在 config.py 中配置，已跳过！")
+            if raw_input in LOWER_SYMBOL_DICT:
+                exchange = LOWER_SYMBOL_DICT[raw_input][2]
 
-# 模式 C：按照板块筛选导出
-# TARGET_SECTOR = '黑色'
-# SELECTED_SYMBOLS = [f"KQ.m@{attr[2]}.{code}" for code, attr in SYMBOL_DICT.items() if attr[3] == TARGET_SECTOR]
+                if DATA_TYPE == 'index':
+                    prefix = "KQ.i@"
+                elif DATA_TYPE in ['main', 'main_adj']:
+                    prefix = "KQ.m@"
+                else:
+                    prefix = ""
+
+                SELECTED_SYMBOLS.append(f"{prefix}{exchange}.{raw_input}")
+            else:
+                print(f"⚠️ 警告: 品种 '{sym}' 未在 config.py 中配置，已跳过！")
+elif SYMBOL_SELECTION_MODE == 'sector':
+    target_sector = globals().get('TARGET_SECTOR')
+    if not target_sector:
+        raise ValueError("使用 sector 模式时请先设置 TARGET_SECTOR")
+    if DATA_TYPE == 'index':
+        prefix = 'KQ.i@'
+    elif DATA_TYPE in ['main', 'main_adj']:
+        prefix = 'KQ.m@'
+    else:
+        prefix = ''
+    SELECTED_SYMBOLS = [
+        f"{prefix}{attr[2]}.{code}"
+        for code, attr in SYMBOL_DICT.items()
+        if attr[3] == target_sector
+    ]
+else:
+    raise ValueError("SYMBOL_SELECTION_MODE 只能是 'all'、'custom' 或 'sector'")
 
 # 5. ⏱️ 选择导出的时间范围 (支持精确到时分秒)
-START_DATE = '2026-05-15 00:00:00'
-END_DATE = '2026-05-24 23:59:59'
+START_DATE = '2026-05-15 09:00:00'
+END_DATE = '2026-05-15 23:59:59'
+
+
+def _extract_product_code(symbol: str) -> str:
+    """从 CZCE.SF309 / SHFE.rb2410 / ta605 中提取品种字母代码。"""
+    raw = str(symbol).split('.')[-1]
+    match = re.match(r'^([A-Za-z]+)', raw)
+    return match.group(1).lower() if match else raw.lower()
+
+
+def _resolve_available_output_path(path: str) -> str:
+    """若目标文件被占用或已存在可自动切换到递增新文件名。"""
+    base, ext = os.path.splitext(path)
+    candidate = path
+    suffix = 1
+    while os.path.exists(candidate):
+        try:
+            with open(candidate, 'a', encoding='utf-8-sig'):
+                return candidate
+        except PermissionError:
+            candidate = f"{base}_{suffix}{ext}"
+            suffix += 1
+    return candidate
+
 
 # 6. 🎛️ 自定义筛选列 —— 【不需要的列直接加 # 注释掉即可】
-# 宽表会严格根据这里保留的字段进行过滤输出
+# all 模式下会尽量按原始窄表字段输出；连续/指数模式仍按宽表字段过滤
 EXPORT_FIELDS = [
     # --- K线专属 ---
     'open', 'high', 'low', 'close',
@@ -106,6 +153,15 @@ EXPORT_FIELDS = [
     # --- 公共通用字段 ---
     'volume', 'oi',
     # 'adjust_factor',  # 复权因子
+]
+
+# all 明细底表导出时默认使用的最简列
+ALL_RAW_EXPORT_FIELDS = [
+    'symbol', 'datetime', 'open', 'high', 'low', 'close', 'volume', 'oi'
+]
+
+TICK_RAW_EXPORT_FIELDS = [
+    'symbol', 'datetime', 'last_price', 'volume', 'bid_price_1', 'bid_volume_1', 'ask_price_1', 'ask_volume_1', 'oi'
 ]
 
 # 7. 📥 导出格式选择
@@ -125,54 +181,100 @@ def execute_export():
     print("⏳ 正在初始化数据分发...")
     provider = DataProvider()
 
-    # 1. 调用底座拉取并自动对齐数据
-    df = provider.get_history(
-        symbols=SELECTED_SYMBOLS,
-        start_date=START_DATE,
-        end_date=END_DATE,
-        freq=FREQ,
-        data_type=DATA_TYPE
-    )
+    # all 明细底表：直接导出原始长表，不做宽表对齐
+    if DATA_TYPE == 'all':
+        raw_symbols = SELECTED_SYMBOLS.copy()
+        needs_post_filter = SYMBOL_SELECTION_MODE in ['sector', 'custom']
+        fetch_symbols = raw_symbols
 
-    if df.empty:
-        print("❌ 导出失败：没有获取到任何有效数据，请检查 ClickHouse 状态或合约配置。")
-        return
+        # all 明细底表存的是具体合约，若这里只给了品种级代码，则先全表按时间拉取，再本地过滤
+        if needs_post_filter:
+            fetch_symbols = [f"ALL_SYMBOLS::{SYMBOL_SELECTION_MODE}"] * 60
 
-    # =====================================================================
-    #  识别实际拉取到的品种（反向解析表头）
-    # =====================================================================
-    actual_full_syms = df.columns.get_level_values(1).unique().tolist()
-    actual_pure_codes = []
+        df = provider.loader.get_data(
+            symbols=fetch_symbols,
+            start_date=START_DATE,
+            end_date=END_DATE,
+            freq=FREQ,
+            data_type=DATA_TYPE
+        )
 
-    for sym in actual_full_syms:
-        # 兼容中文加括号格式，例如 '螺纹钢(rb)[主连]'
-        match = re.search(r'\((.*?)\)', sym)
-        if match:
-            actual_pure_codes.append(match.group(1).lower())
-        else:
-            # 兼容纯代码格式，例如 'CZCE.ta605' 或 'ta605'
-            actual_pure_codes.append(sym.split('.')[-1].lower())
+        if df.empty:
+            print("❌ 导出失败：没有获取到任何有效数据，请检查 ClickHouse 状态或合约配置。")
+            return
 
-    actual_pure_codes = sorted(list(set(actual_pure_codes)))
-    requested_pure_codes = [sym.split('.')[-1].lower() for sym in SELECTED_SYMBOLS]
+        if needs_post_filter and 'symbol' in df.columns:
+            requested_codes = {_extract_product_code(sym) for sym in raw_symbols}
+            before_rows = len(df)
+            df = df[df['symbol'].astype(str).map(_extract_product_code).isin(requested_codes)].copy()
+            print(f"🧪 [PostFilter] all 明细表已按品种前缀过滤: {sorted(requested_codes)}")
+            print(f"🧪 [PostFilter] 行数变化: {before_rows:,} -> {len(df):,}")
 
-    # 对比丢失的品种
-    missed_codes = set(requested_pure_codes) - set(actual_pure_codes)
-    if missed_codes:
-        print(f"\n⚠️ [对齐结果] 预期请求 {len(requested_pure_codes)} 个品种，实际有效 {len(actual_pure_codes)} 个。")
-        print(f"⚠️ [丢失品种] {', '.join(missed_codes)} (提示: 可能是因为在 '{DATA_TYPE}' 表中不存在该合约)")
+        if df.empty:
+            print("❌ 导出失败：本地按品种前缀过滤后没有命中任何合约，请检查板块配置或底表symbol格式。")
+            return
+
+        print("✂️ 正在按最简原始字段输出 all 明细底表...")
+        raw_export_fields = TICK_RAW_EXPORT_FIELDS if FREQ == 'tick' else ALL_RAW_EXPORT_FIELDS
+        available_fields = [col for col in raw_export_fields if col in df.columns]
+        df = df[available_fields].copy()
+
+        actual_full_syms = sorted(df['symbol'].astype(str).str.lower().unique().tolist()) if 'symbol' in df.columns else []
+        print(f"\n✅ [导出结果] all 明细模式导出完成，实际拉取到 {len(actual_full_syms)} 个有效合约。")
     else:
-        print(f"\n✅ [对齐结果] 所有 {len(actual_pure_codes)} 个请求品种均已成功拉取！")
+        # 1. 调用底座拉取并自动对齐数据
+        df = provider.get_history(
+            symbols=SELECTED_SYMBOLS,
+            start_date=START_DATE,
+            end_date=END_DATE,
+            freq=FREQ,
+            data_type=DATA_TYPE
+        )
 
-    # 2. 执行【可选列】精准过滤
-    print("✂️ 正在根据配置筛选目标字段...")
-    available_fields = [f for f in EXPORT_FIELDS if f in df.columns.levels[0]]
-    df = df.loc[:, df.columns.get_level_values(0).isin(available_fields)]
+        if df.empty:
+            print("❌ 导出失败：没有获取到任何有效数据，请检查 ClickHouse 状态或合约配置。")
+            return
 
-    # 3. 执行【表头拍平】逻辑
-    if FLATTEN_COLUMNS:
-        new_columns = [f"{col[1]}_{col[0]}" for col in df.columns]
-        df.columns = new_columns
+        # =====================================================================
+        #  识别实际拉取到的品种（反向解析表头）
+        # =====================================================================
+        actual_full_syms = df.columns.get_level_values(1).unique().tolist()
+        actual_pure_codes = []
+
+        for sym in actual_full_syms:
+            # 兼容中文加括号格式，例如 '螺纹钢(rb)[主连]'
+            match = re.search(r'\((.*?)\)', sym)
+            if match:
+                actual_pure_codes.append(match.group(1).lower())
+            else:
+                # 兼容纯代码格式，例如 'CZCE.ta605' 或 'ta605'
+                actual_pure_codes.append(sym.split('.')[-1].lower())
+
+        actual_pure_codes = sorted(list(set(actual_pure_codes)))
+        requested_pure_codes = [sym.split('.')[-1].lower() for sym in SELECTED_SYMBOLS]
+
+        # 全市场 all 模式下，SELECTED_SYMBOLS 只是触发器，不代表真实底表 symbol
+        skip_requested_compare = (DATA_TYPE == 'all' and SYMBOL_SELECTION_MODE == 'all')
+
+        # 对比丢失的品种
+        missed_codes = set(requested_pure_codes) - set(actual_pure_codes)
+        if skip_requested_compare:
+            print(f"\n✅ [对齐结果] 全市场 all 模式导出完成，实际拉取到 {len(actual_pure_codes)} 个有效合约/代码。")
+        elif missed_codes:
+            print(f"\n⚠️ [对齐结果] 预期请求 {len(requested_pure_codes)} 个品种，实际有效 {len(actual_pure_codes)} 个。")
+            print(f"⚠️ [丢失品种] {', '.join(missed_codes)} (提示: 可能是因为在 '{DATA_TYPE}' 表中不存在该合约)")
+        else:
+            print(f"\n✅ [对齐结果] 所有 {len(actual_pure_codes)} 个请求品种均已成功拉取！")
+
+        # 2. 执行【可选列】精准过滤
+        print("✂️ 正在根据配置筛选目标字段...")
+        available_fields = [f for f in EXPORT_FIELDS if f in df.columns.levels[0]]
+        df = df.loc[:, df.columns.get_level_values(0).isin(available_fields)]
+
+        # 3. 执行【表头拍平】逻辑
+        if FLATTEN_COLUMNS:
+            new_columns = [f"{col[1]}_{col[0]}" for col in df.columns]
+            df.columns = new_columns
 
     # 4. 自动创建目标下载文件夹
     if not os.path.exists(EXPORT_DIR):
@@ -180,7 +282,9 @@ def execute_export():
         print(f"📁 目标下载目录不存在，已自动创建: {EXPORT_DIR}")
 
     # 5. 智能构建文件名
-    if len(actual_pure_codes) <= 5:
+    if DATA_TYPE == 'all':
+        symbol_desc = f"{len(actual_full_syms)}contract_raw"
+    elif len(actual_pure_codes) <= 5:
         symbol_desc = f"{len(actual_pure_codes)}symbol_{'_'.join(actual_pure_codes)}"
     else:
         symbol_desc = f"{len(actual_pure_codes)}symbol_multi"
@@ -202,17 +306,20 @@ def execute_export():
 
     filename = f"{symbol_desc}_{start_dt}_{end_dt}_{freq_desc}_{type_desc}.{SAVE_FORMAT}"
     full_save_path = os.path.join(EXPORT_DIR, filename)
+    resolved_save_path = _resolve_available_output_path(full_save_path)
 
     # 6. 安全落盘
     print(f"💾 正在将 {len(df):,} 行数据打包写入磁盘...")
+    if resolved_save_path != full_save_path:
+        print(f"🔓 [文件占用保护] 检测到目标文件正在被占用，已自动改存为: {resolved_save_path}")
     if SAVE_FORMAT.lower() == 'csv':
-        df.to_csv(full_save_path, encoding='utf-8-sig')
+        df.to_csv(resolved_save_path, index=False, encoding='utf-8-sig')
     elif SAVE_FORMAT.lower() == 'parquet':
-        df.to_parquet(full_save_path)
+        df.to_parquet(resolved_save_path, index=False)
 
     print("\n" + "=" * 65)
     print("✨🎉 下载成功！🎉✨")
-    print(f"✅ 文件完好保存至: {full_save_path}")
+    print(f"✅ 文件完好保存至: {resolved_save_path}")
     print(f"📊 最终矩阵形状 (Shape): {df.shape}")
     print("=" * 65 + "\n")
 

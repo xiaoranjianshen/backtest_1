@@ -42,10 +42,21 @@ class ClickHouseLoader:
     def _fetch_from_db(self, symbols: list, start_date: str, end_date: str, freq: str, data_type: str) -> pd.DataFrame:
         db_name, table_name = self._get_table_info(freq, data_type)
         symbols_str = ", ".join([f"'{s}'" for s in symbols])
+        skip_symbol_filter = (data_type == 'all' and len(symbols) >= 50)
+        preview_symbols = symbols[:5]
+        print(
+            f"🧭 [Loader] 连接信息 -> host={CH_HOST}, user={CH_USER}, db={db_name}, table={table_name}, "
+            f"freq={freq}, data_type={data_type}, symbols={len(symbols)}"
+        )
+        print(f"🔎 [Loader] 符号预览 -> {preview_symbols}")
+        print(f"🗓️ [Loader] 时间范围 -> {start_date} ~ {end_date}")
+        if skip_symbol_filter:
+            print("🪄 [Loader] 检测到 all + 全市场模式，本次将跳过 symbol 过滤，直接按时间范围导出全表。")
 
         # 💥 核心逻辑：根据请求的是 Tick 还是 K线，动态组装查询字段！
         if freq == 'tick':
             # Tick 数据的专属查询结构
+            symbol_filter_clause = "" if skip_symbol_filter else f"AND symbol IN ({symbols_str})"
             query = f"""
                 SELECT 
                     symbol, datetime, last_price, volume, 
@@ -54,11 +65,11 @@ class ClickHouseLoader:
                        if(hasColumnInTable('{db_name}', '{table_name}', 'open_oi'), open_oi, 0.0)) AS oi
                 FROM {db_name}.{table_name}
                 WHERE datetime >= '{start_date}' AND datetime <= '{end_date}'
-                  AND symbol IN ({symbols_str})
+                  {symbol_filter_clause}
                 ORDER BY symbol, datetime ASC
             """
         elif freq == '1d' and data_type == 'main':
-            # 💥 日线主连：需要 JOIN m_daily 和 daily_adj_factor 来获取 month_change
+            # 日线主连：需要 JOIN m_daily 和 daily_adj_factor 来获取 month_change
             query = f"""
                 SELECT 
                     m.symbol, 
@@ -72,8 +83,8 @@ class ClickHouseLoader:
                     if(d.month_change IS NULL, 0, d.month_change) AS month_change,
                     d.underlying_symbol,
                     1.0 AS adjust_factor
-                FROM i_contract_daily_data.m_daily m
-                LEFT JOIN i_contract_daily_data.daily_adj_factor d
+                FROM {db_name}.m_daily m
+                LEFT JOIN {db_name}.daily_adj_factor d
                     ON m.symbol = d.symbol AND m.datetime = d.datetime
                 WHERE m.datetime >= '{start_date}' AND m.datetime <= '{end_date}'
                   AND m.symbol IN ({symbols_str})
@@ -81,6 +92,7 @@ class ClickHouseLoader:
             """
         else:
             # K 线数据 (1m, 5m, 1d) 的专属查询结构
+            symbol_filter_clause = "" if skip_symbol_filter else f"AND symbol IN ({symbols_str})"
             query = f"""
                 SELECT 
                     symbol, datetime, open, high, low, close, volume, 
@@ -90,11 +102,12 @@ class ClickHouseLoader:
                     if(hasColumnInTable('{db_name}', '{table_name}', 'adjust_factor'), adjust_factor, 1.0) AS adjust_factor
                 FROM {db_name}.{table_name}
                 WHERE datetime >= '{start_date}' AND datetime <= '{end_date}'
-                  AND symbol IN ({symbols_str})
+                  {symbol_filter_clause}
                 ORDER BY symbol, datetime ASC
             """
 
         try:
+            print(f"🧾 [Loader] SQL预览 -> {query[:500].strip()}...")
             result, columns = self.client.execute(query, with_column_types=True)
             df = pd.DataFrame(result, columns=[c[0] for c in columns])
             return df

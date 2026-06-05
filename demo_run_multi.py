@@ -32,7 +32,7 @@ if __name__ == "__main__":
             'target_symbols': TARGET_SYMBOLS,
             'fast_window': 10,
             'slow_window': 30,
-            'capital_pct': 0.10
+            'capital_pct': 0.03
         }
     )
 

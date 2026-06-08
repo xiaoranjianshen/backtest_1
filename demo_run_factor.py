@@ -22,7 +22,7 @@ FREQ = '1d'
 DATA_TYPE = 'main'
 START_DATE = '2020-05-20 00:00:00'
 END_DATE = '2026-05-20 23:59:59'
-INITIAL_CAPITAL = 1000000.0
+INITIAL_CAPITAL = 5000000.0
 
 STRATEGY_CLASS = CompositeFactorStrategy
 
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     print("[Runner] 正在初始化多因子截面回测任务...")
 
     # 💥 直接传入极简参数，脏活全部交给引擎
-    run_backtest(
+    analyzer = run_backtest(
         strategy_class=STRATEGY_CLASS,
         symbols_input=TARGET_SYMBOLS,
         start_date=START_DATE,
@@ -46,3 +46,6 @@ if __name__ == "__main__":
         initial_capital=INITIAL_CAPITAL,
         strategy_kwargs=STRATEGY_KWARGS
     )
+
+    from frontend_index import build_html_dashboard
+    build_html_dashboard(analyzer)

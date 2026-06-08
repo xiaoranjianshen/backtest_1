@@ -27,13 +27,14 @@ class FactorTemplate(BaseStrategy):
         print(f"[多因子模板] 初始化完成 | 调仓频率: 每 {self.rebalance_period} 周期")
         self.inited = True
 
-    def _send_cross_order(self, sym: str, direction: Direction, offset: Offset, volume: int):
+    def _send_cross_order(self, sym: str, direction: Direction, offset: Offset, volume: int,
+                          current_time: datetime, reference_price: float):
         """多因子专属发单通道：允许向非 self.symbol 的特定品种发送指令"""
         order = Order(
             symbol=sym, direction=direction, offset=offset,
-            volume=volume, price=0.0, order_type=OrderType.MARKET, insert_time=datetime.now()
+            volume=volume, price=0.0, order_type=OrderType.MARKET, insert_time=current_time
         )
-        self.broker.insert_order(order, reference_price=0.0)
+        self.broker.insert_order(order, reference_price=reference_price)
 
     def on_bar(self, current_time: datetime, bar_data: dict):
         """核心驱动：每到达调仓周期，提取横截面数据并执行调仓"""
@@ -95,14 +96,14 @@ class FactorTemplate(BaseStrategy):
             if curr_v > 0 and targ_v < curr_v:
                 close_vol = curr_v - max(targ_v, 0)
                 print(f"[{current_time}] [调仓] {sym} 平多 {close_vol} 手")
-                self._send_cross_order(sym, Direction.SHORT, Offset.CLOSE, close_vol)
+                self._send_cross_order(sym, Direction.SHORT, Offset.CLOSE, close_vol, current_time, cross_section[sym]['close'])
                 self.current_volumes[sym] -= close_vol
 
             # 空头减仓或反向
             elif curr_v < 0 and targ_v > curr_v:
                 close_vol = abs(curr_v) - abs(min(targ_v, 0))
                 print(f"[{current_time}] [调仓] {sym} 平空 {close_vol} 手")
-                self._send_cross_order(sym, Direction.LONG, Offset.CLOSE, close_vol)
+                self._send_cross_order(sym, Direction.LONG, Offset.CLOSE, close_vol, current_time, cross_section[sym]['close'])
                 self.current_volumes[sym] += close_vol
 
         # C. 调仓第二阶段：开仓与加仓
@@ -113,12 +114,12 @@ class FactorTemplate(BaseStrategy):
             if targ_v > 0 and targ_v > curr_v:
                 open_vol = targ_v - max(curr_v, 0)
                 print(f"[{current_time}] [调仓] {sym} 开多 {open_vol} 手 (权重: {target_weights[sym] * 100:.1f}%)")
-                self._send_cross_order(sym, Direction.LONG, Offset.OPEN, open_vol)
+                self._send_cross_order(sym, Direction.LONG, Offset.OPEN, open_vol, current_time, cross_section[sym]['close'])
                 self.current_volumes[sym] = targ_v
 
             # 空头加仓
             elif targ_v < 0 and targ_v < curr_v:
                 open_vol = abs(targ_v) - abs(min(curr_v, 0))
                 print(f"[{current_time}] [调仓] {sym} 开空 {open_vol} 手 (权重: {target_weights[sym] * 100:.1f}%)")
-                self._send_cross_order(sym, Direction.SHORT, Offset.OPEN, open_vol)
+                self._send_cross_order(sym, Direction.SHORT, Offset.OPEN, open_vol, current_time, cross_section[sym]['close'])
                 self.current_volumes[sym] = targ_v

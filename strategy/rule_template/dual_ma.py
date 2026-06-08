@@ -5,17 +5,23 @@
 from strategy.rule_template.rule import RuleTemplate
 
 
-class DualMAStrategy(RuleStrategy):  # 或者你的其他基类名
+class DualMAStrategy(RuleTemplate):
     def __init__(self, broker, account, symbol, fast_window=10, slow_window=30, fixed_volume=None, capital_pct=None):
-        # 如果你的基类接受 symbol，请这样传：
-        # super().__init__(broker, account, symbol)
+        self.fast_window = int(fast_window)
+        self.slow_window = int(slow_window)
+        if self.fast_window <= 0 or self.slow_window <= 0:
+            raise ValueError("fast_window 和 slow_window 必须为正整数")
+        if self.fast_window >= self.slow_window:
+            raise ValueError("fast_window 必须小于 slow_window")
 
-        # 如果基类不接受，或者你没写 super，请务必在这里显式绑定：
-        super().__init__(broker, account)
-        self.symbol = symbol  # 💥 就是漏了这一行！把传进来的参数存为自身属性
-
-        self.fast_window = fast_window
-        self.slow_window = slow_window
+        super().__init__(
+            broker=broker,
+            account=account,
+            symbol=symbol,
+            warmup_bars=self.slow_window,
+            fixed_volume=fixed_volume,
+            capital_pct=capital_pct,
+        )
         self.fixed_volume = fixed_volume
         self.capital_pct = capital_pct
 

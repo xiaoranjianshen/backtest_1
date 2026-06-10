@@ -2,11 +2,11 @@
 """
 微观市场冲击模型 (Market Impact Model) & 执行计划基类
 
-核心：废弃被动挂单假定，全部采用市价主动吃单 (Taker) 的深度穿透计算
+核心：采用主动成交 (Taker) 的盘口深度穿透模型估计执行成本。
 
 与现有结构整合：
 - ExecutionPlan 与 tick_algorithms/base.py 保持兼容
-- calculate_execution 是冷酷的"裁判"，只返回物理惩罚后的结果
+- calculate_execution 只返回按盘口深度估算后的成交结果
 - TWAP/VWAP 只做调度器，调用此函数获取成交价
 """
 from dataclasses import dataclass, field
@@ -26,7 +26,7 @@ class ExecutionPlan:
     direction: str           # "open_long" 或 "open_short"
     total_volume: int        # 总期望下单手数
 
-    # 💥 核心：到达中间价 (Arrival Price)
+    # 到达中间价 (Arrival Price)
     # 信号发出的那一瞬间，(bid + ask) / 2
     # 这是评价算法好坏的唯一绝对基准
     arrival_price: float
@@ -84,9 +84,9 @@ class ExecutionPlan:
 
 class MarketImpactModel:
     """
-    💥 微观冲击惩罚函数
+    微观市场冲击模型
 
-    模拟大单吃穿盘口 (Walk the Book) 的物理过程
+    模拟大单穿透盘口 (Walk the Book) 的成交过程。
 
     使用方法：
         impact = MarketImpactModel(tick_size=1.0, impact_step_vol=20)
@@ -125,9 +125,9 @@ class MarketImpactModel:
     def calculate_execution(self, direction: str, tick: Dict,
                           target_volume: int, arrival_price: float) -> Tuple[float, float, str]:
         """
-        冷酷无情的市价单成交计算
+        市价单成交成本估算
 
-        输入你要下的量，返回被物理惩罚后的成交均价
+        输入目标成交量，返回按盘口深度估算后的成交均价。
 
         Args:
             direction: "open_long" 或 "open_short"
@@ -172,7 +172,7 @@ class MarketImpactModel:
             current_price = bid
             current_vol_avail = bid_vol
 
-        # ⚔️ 冷酷无情地吃单 (Walk the Order Book)
+        # 主动成交并逐档穿透盘口 (Walk the Order Book)。
         while remaining > 0:
             filled_at_this_level = min(remaining, current_vol_avail)
             total_cost += filled_at_this_level * current_price

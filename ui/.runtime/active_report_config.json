@@ -1,0 +1,29 @@
+{
+  "strategy": "ZScoreReversalStrategy",
+  "symbols": [
+    "rb",
+    "hc",
+    "i",
+    "ta",
+    "ma",
+    "p",
+    "y",
+    "sr"
+  ],
+  "start_date": "2021-01-01",
+  "end_date": "2022-01-01",
+  "freq": "1d",
+  "data_type": "main",
+  "initial_capital": 5000000.0,
+  "enable_main_rollover": true,
+  "sizing_mode": "available_pct",
+  "sizing_value": 0.03,
+  "min_volume": 0,
+  "round_lot": 1,
+  "order_type": "market",
+  "price_field": "close",
+  "slippage_ticks": 0.5,
+  "close_pct": 1.0,
+  "allow_reverse": false,
+  "respect_pending_orders": true
+}

@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-核心调度主循环 (纯净接口版)
+核心调度主循环 (Backtest Engine)
 """
 import os
 import sys
@@ -17,6 +17,15 @@ from broker.match_engine import MatchEngine
 from broker.rollover import MainContractRollover
 from analyzer.performance import StrategyAnalyzer
 from config import build_query_symbol, FEE_DICT, pure_product_code
+
+
+STRATEGY_CLASS_TO_CONFIG_KEY = {
+    "GeneralMultiMAStrategy": "general_multi_ma",
+    "BreakoutPyramidStrategy": "breakout_pyramid",
+    "DualMAStrategy": "dual_ma",
+    "CompositeFactorStrategy": "composite_factor",
+    "CrossMomentumFactor": "cross_momentum",
+}
 
 
 def extract_bar_data(row, columns_level_1):
@@ -61,6 +70,20 @@ def _extract_close_prices(bar_data: dict) -> dict:
     return prices
 
 
+def _calc_position_notional(account: Account, current_prices: dict) -> float:
+    """Calculate absolute notional value of all open positions at current close prices."""
+    total_notional = 0.0
+    for pos_key, pos in account.positions.items():
+        symbol, _ = pos_key.rsplit('_', 1)
+        price = current_prices.get(symbol)
+        volume = account._position_volume(pos)
+        if price is None or pd.isna(price) or volume <= 0:
+            continue
+        meta = account.fee_model._get_meta_data(symbol)
+        total_notional += abs(float(price) * volume * meta['multiplier'])
+    return total_notional
+
+
 def _resolve_symbols(symbols_input, data_type):
     is_single = isinstance(symbols_input, str)
     sym_list = [symbols_input] if is_single else symbols_input
@@ -71,7 +94,7 @@ def _resolve_symbols(symbols_input, data_type):
     for sym in sym_list:
         query_sym = build_query_symbol(sym, data_type)
         if query_sym is None:
-            print(f"[Engine] Warning: 品种 {sym} 未在 config.py 中配置，已跳过。")
+            print(f"[Engine Warning] 品种 {sym} 未在 config.py 中配置，已跳过。")
             continue
 
         raw_input = sym.lower()
@@ -85,9 +108,106 @@ def _resolve_symbols(symbols_input, data_type):
         raise ValueError("[Engine] Error: 解析后没有有效的交易品种！")
 
     if is_single:
-        return pure_list[0], full_list[0], full_list
-    else:
-        return 'multi', f"{len(full_list)} 个品种组合", full_list
+        return pure_list[0], full_list[0], full_list, pure_list
+    return 'multi', f"{len(full_list)} 个品种组合", full_list, pure_list
+
+
+def _symbols_as_list(symbols_input) -> list[str]:
+    if isinstance(symbols_input, str):
+        return [symbols_input]
+    return list(symbols_input or [])
+
+
+def _strategy_key(strategy_class) -> str:
+    return STRATEGY_CLASS_TO_CONFIG_KEY.get(strategy_class.__name__, strategy_class.__name__)
+
+
+def _extract_symbols_from_columns(columns_level_1) -> set[str]:
+    available = set()
+    for full_sym in columns_level_1:
+        match = re.search(r'\((.*?)\)', str(full_sym))
+        raw = match.group(1) if match else str(full_sym)
+        available.add(pure_product_code(raw))
+    return available
+
+
+def _build_run_config(
+        strategy_class,
+        symbols_input,
+        start_date,
+        end_date,
+        freq,
+        data_type,
+        initial_capital,
+        strategy_kwargs,
+        enable_main_rollover,
+):
+    config = {
+        "strategy": _strategy_key(strategy_class),
+        "symbols": _symbols_as_list(symbols_input),
+        "start_date": str(start_date).split()[0],
+        "end_date": str(end_date).split()[0],
+        "freq": freq,
+        "data_type": data_type,
+        "initial_capital": float(initial_capital),
+        "enable_main_rollover": bool(enable_main_rollover),
+    }
+
+    if isinstance(strategy_kwargs, dict):
+        if "fast_window" in strategy_kwargs:
+            config["fast_window"] = strategy_kwargs["fast_window"]
+        if "slow_window" in strategy_kwargs:
+            config["slow_window"] = strategy_kwargs["slow_window"]
+
+        sizing = strategy_kwargs.get("sizing") or {}
+        if isinstance(sizing, dict):
+            config.update({
+                "sizing_mode": sizing.get("mode"),
+                "sizing_value": sizing.get("value"),
+                "min_volume": sizing.get("min_volume"),
+                "max_volume": sizing.get("max_volume"),
+                "round_lot": sizing.get("round_lot", 1),
+            })
+
+        execution = strategy_kwargs.get("execution") or {}
+        if isinstance(execution, dict):
+            config.update({
+                "order_type": execution.get("order_type"),
+                "price_field": execution.get("price_field", "close"),
+                "slippage_ticks": execution.get("slippage_ticks"),
+                "limit_mode": execution.get("limit_mode"),
+                "limit_ticks": execution.get("ticks"),
+            })
+
+        exit_config = strategy_kwargs.get("exit") or {}
+        if isinstance(exit_config, dict):
+            config.update({
+                "close_pct": exit_config.get("close_pct"),
+                "allow_reverse": exit_config.get("allow_reverse"),
+                "respect_pending_orders": exit_config.get("respect_pending_orders"),
+            })
+
+    return {key: value for key, value in config.items() if value is not None}
+
+
+def _execution_attr(config, key, default=None):
+    if isinstance(config, dict):
+        return config.get(key, default)
+    return getattr(config, key, default)
+
+
+def _describe_slippage_setting(strategy, strategy_kwargs: dict) -> str:
+    execution_config = getattr(strategy, 'execution_config', None)
+    if execution_config is None:
+        execution_config = (strategy_kwargs or {}).get('execution', {})
+
+    order_type = str(_execution_attr(execution_config, 'order_type', 'market')).lower()
+    slippage_ticks = float(_execution_attr(execution_config, 'slippage_ticks', 1.0))
+    slippage_text = f"{slippage_ticks:g} 跳"
+
+    if order_type == 'limit':
+        return f"策略限价单: 0 跳；市价/换月默认: {slippage_text}"
+    return f"策略市价单: {slippage_text}"
 
 
 def run_backtest(
@@ -112,7 +232,7 @@ def run_backtest(
     if strategy_kwargs is None:
         strategy_kwargs = {}
 
-    strat_sym, target_desc, query_symbols = _resolve_symbols(symbols_input, data_type)
+    strat_sym, target_desc, query_symbols, requested_symbols = _resolve_symbols(symbols_input, data_type)
 
     print("=" * 60)
     print(f"[Engine] 启动任务 | 标的: {target_desc} | 频率: {freq} | 初始资金: ￥{initial_capital:,.2f}")
@@ -133,6 +253,14 @@ def run_backtest(
         return
 
     columns_level_1 = list(dict.fromkeys([col[1] for col in df.columns]))
+    available_symbols = _extract_symbols_from_columns(columns_level_1)
+    missing_symbols = [sym for sym in requested_symbols if pure_product_code(sym) not in available_symbols]
+    if missing_symbols:
+        print(
+            "[Engine Warning] 以下请求品种在实际数据矩阵中没有有效数据，已无法参与本次回测: "
+            f"{', '.join([sym.upper() for sym in missing_symbols])}"
+        )
+        print("[Engine Warning] 请检查对应数据表是否已有该品种主连/指数数据，或数据库 symbol 命名是否与 config.py 一致。")
 
     actual_start = df.index[0]
     actual_end = df.index[-1]
@@ -168,7 +296,8 @@ def run_backtest(
         if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
             continue
 
-        # 策略处理当前K线
+        # 事件顺序：先用当前 bar 撮合上一根 bar 留下的挂单，再让策略读取当前 bar 生成新订单。
+        # 因此策略在 on_bar 里发出的订单最早会在下一根 bar 被撮合。
         broker.process_cross_section(current_time, bar_data)
         strategy.on_bar(current_time, bar_data)
 
@@ -183,6 +312,7 @@ def run_backtest(
             equity_records.append({
                 'datetime': current_time,
                 'equity': account.get_total_equity(close_prices),
+                'position_notional': _calc_position_notional(account, close_prices),
             })
 
     print("\n" + "=" * 60)
@@ -190,7 +320,7 @@ def run_backtest(
     if rollover_handler and rollover_count > 0:
         print(f"[Engine] 本次回测共执行 {rollover_count} 次主力换月")
     if broker.pending_orders:
-        print(f"⚠️ [Engine] 回测结束仍有 {len(broker.pending_orders)} 笔挂单未撮合")
+        print(f"[Engine Warning] 回测结束仍有 {len(broker.pending_orders)} 笔挂单未撮合")
     account.print_status("最终清算", last_close_prices)
     print("=" * 60)
 
@@ -207,15 +337,10 @@ def run_backtest(
 
         equity_df = pd.DataFrame(equity_records) if equity_records else None
 
-        # 计算换月损耗
         rollover_commission = 0.0
-        rollover_pnl_loss = 0.0
         for t in broker.trade_history:
             if getattr(t, 'is_rollover', False):
                 rollover_commission += t.commission
-                if t.offset in [Offset.CLOSE, Offset.CLOSE_TODAY]:
-                    # 换月平仓盈亏（应该接近0，因为我们按昨收结算）
-                    pass
 
         account_summary = {
             'total_pnl': account.total_pnl,
@@ -227,19 +352,15 @@ def run_backtest(
         }
 
         # 构建回测参数描述表
-        slippage_ticks = 1  # 当前默认滑点为 1 跳
-        from config import FEE_DICT, pure_product_code
-
         if strat_sym.upper() == 'MULTI' and isinstance(symbols_input, list):
             margin_list = []
             for sym in symbols_input:
                 p_code = pure_product_code(sym)
-                # 💥 增加 .upper() 和 .lower() 双重匹配，彻底解决 TA 等品种查不到报 0 的问题
+                # 兼容配置字典中大小写不同的品种代码。
                 meta = FEE_DICT.get(p_code) or FEE_DICT.get(p_code.upper()) or FEE_DICT.get(p_code.lower()) or {}
                 rate = meta.get('margin_rate', 0)
                 margin_list.append(f"{p_code.upper()}:{rate * 100:.0f}%")
             margin_str = ", ".join(margin_list)
-            # 💥 将 MULTI 展开为 MULTI(RB, HC, TA...)
             display_symbol = f"MULTI ({', '.join([s.upper() for s in symbols_input])})"
         else:
             p_code = pure_product_code(strat_sym)
@@ -248,13 +369,13 @@ def run_backtest(
             margin_str = f"{margin_rate * 100:.1f}%"
             display_symbol = strat_sym.upper()
 
-        # 💥 组装最终呈现的字典 (直接删除了 '手续费设置' 这一列)
+        # 报告参数只放用户需要核对的回测口径；手续费明细在绩效表中按品种展示。
         describe_params = {
             '数据周期': freq,
             '回测区间': f"{str(start_date).split()[0]} 至 {str(end_date).split()[0]}",
             '初始资金': f"￥{initial_capital:,.2f}",
             '回测品种': display_symbol,
-            '滑点设置': f"{slippage_ticks} 跳",
+            '滑点设置': _describe_slippage_setting(strategy, strategy_kwargs),
             '保证金率': margin_str
         }
 
@@ -270,9 +391,20 @@ def run_backtest(
             equity_df=pd.DataFrame(equity_records),
             describe_params=describe_params
         )
+        analyzer.run_config = _build_run_config(
+            strategy_class=strategy_class,
+            symbols_input=symbols_input,
+            start_date=start_date,
+            end_date=end_date,
+            freq=freq,
+            data_type=data_type,
+            initial_capital=initial_capital,
+            strategy_kwargs=strategy_kwargs,
+            enable_main_rollover=enable_main_rollover,
+        )
         analyzer.generate_report()
 
-        return analyzer  # 💥 加上这一行！把算好的数据引擎交还给外部！
+        return analyzer
     else:
         print("[Engine] 回测期间无交易记录产生。")
 

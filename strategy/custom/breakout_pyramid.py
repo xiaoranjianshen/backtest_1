@@ -1,84 +1,115 @@
 # -*- coding: utf-8 -*-
 """
-Breakout strategy with pyramiding.
+Breakout pyramiding signal strategy.
 
-This is a beginner-friendly example for custom strategies.
-
-Logic:
-- If close breaks above the previous N-bar high, increase long target lots.
-- If close breaks below the previous N-bar low, increase short target lots when allowed.
-- Orders are submitted after the current bar is known, so fills happen on the next bar.
+The strategy emits incremental trading intents. Base position size, execution
+type, slippage, and exit behavior are controlled by the general strategy config.
 """
 import pandas as pd
 
-from strategy.base import PortfolioTemplate
+from strategy.general_template import GeneralSignalStrategy
 
 
-class BreakoutPyramidStrategy(PortfolioTemplate):
+class BreakoutPyramidStrategy(GeneralSignalStrategy):
     def __init__(
         self,
         broker,
         account,
         symbol,
         lookback: int = 20,
-        step_volume: int = 5,
-        max_volume: int = 20,
+        add_scale: float = 1.0,
+        max_position_scale: float = 4.0,
         allow_short: bool = True,
+        **kwargs,
     ):
-        super().__init__(broker, account, symbols=[symbol])
-        self.symbol = symbol.lower()
+        super().__init__(
+            broker=broker,
+            account=account,
+            symbol=symbol,
+            target_symbols=[symbol],
+            **kwargs,
+        )
+
+        self.symbol = self.symbols[0]
         self.lookback = int(lookback)
-        self.step_volume = int(step_volume)
-        self.max_volume = int(max_volume)
+        self.add_scale = float(add_scale)
+        self.max_position_scale = float(max_position_scale)
         self.allow_short = bool(allow_short)
         self.history = []
 
         if self.lookback <= 1:
             raise ValueError("lookback must be greater than 1")
-        if self.step_volume <= 0:
-            raise ValueError("step_volume must be positive")
-        if self.max_volume <= 0:
-            raise ValueError("max_volume must be positive")
+        if self.add_scale <= 0:
+            raise ValueError("add_scale must be positive")
+        if self.max_position_scale <= 0:
+            raise ValueError("max_position_scale must be positive")
 
     def on_init(self):
+        super().on_init()
         print(
-            f"[BreakoutPyramid] symbol={self.symbol} | lookback={self.lookback} | "
-            f"step={self.step_volume} | max={self.max_volume} | allow_short={self.allow_short}"
+            f"[Strategy BreakoutPyramid] symbol={self.symbol} | lookback={self.lookback} | "
+            f"add_scale={self.add_scale:g} | max_position_scale={self.max_position_scale:g} | "
+            f"allow_short={self.allow_short}"
         )
-        self.inited = True
 
-    def generate_target_portfolio(self, bar_data: dict) -> dict:
+    def generate_signals(self, bar_data: dict) -> dict:
         if self.symbol not in bar_data:
             return {}
 
         bar = bar_data[self.symbol]
-        close = bar.get("close")
-        high = bar.get("high")
-        low = bar.get("low")
+        close_price = bar.get("close")
+        high_price = bar.get("high")
+        low_price = bar.get("low")
 
-        if pd.isna(close) or pd.isna(high) or pd.isna(low):
+        if pd.isna(close_price) or pd.isna(high_price) or pd.isna(low_price):
             return {}
 
-        # Use only previous bars for breakout levels. The current bar is appended after the signal.
         if len(self.history) < self.lookback:
-            self.history.append({"close": close, "high": high, "low": low})
-            return {}
+            self.history.append({"close": close_price, "high": high_price, "low": low_price})
+            return {
+                self.symbol: {
+                    "signal": None,
+                    "reason": "warming_up",
+                    "metrics": {"close": close_price, "history_len": len(self.history)},
+                }
+            }
 
         recent = self.history[-self.lookback:]
         prev_high = max(item["high"] for item in recent)
         prev_low = min(item["low"] for item in recent)
-        current_net = self.get_net_position(self.symbol)
-        target_net = current_net
 
-        if close > prev_high:
-            base = max(current_net, 0)
-            target_net = min(base + self.step_volume, self.max_volume)
-        elif close < prev_low:
+        signal = None
+        position_mode = None
+        reason = "hold"
+
+        if close_price > prev_high:
+            signal = 1
+            position_mode = "delta"
+            reason = "upside_breakout"
+        elif close_price < prev_low:
             if self.allow_short:
-                base = min(current_net, 0)
-                target_net = max(base - self.step_volume, -self.max_volume)
+                signal = -1
+                position_mode = "delta"
+                reason = "downside_breakout"
             else:
-                target_net = 0
+                signal = 0
+                position_mode = "flat"
+                reason = "downside_breakout_exit"
 
-        self.history.append({"close": close, "high": high, "low": low})
-        return {self.symbol: target_net}
+        self.history.append({"close": close_price, "high": high_price, "low": low_price})
+
+        return {
+            self.symbol: {
+                "signal": signal,
+                "position_mode": position_mode,
+                "size_scale": self.add_scale,
+                "max_position_scale": self.max_position_scale,
+                "reason": reason,
+                "metrics": {
+                    "close": close_price,
+                    "prev_high": prev_high,
+                    "prev_low": prev_low,
+                    "lookback": self.lookback,
+                },
+            }
+        }

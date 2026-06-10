@@ -54,7 +54,7 @@ class MatchEngine:
             if total_pos < order.volume:
                 # 持仓不够，按现有持仓量平仓，并给出警告
                 print(
-                    f"⚠️ [Broker] 平仓{order.volume}手，实际持仓仅{total_pos}手"
+                    f"[Broker Warning] 平仓{order.volume}手，实际持仓仅{total_pos}手"
                     f"(昨:{yd_vol} 今:{td_vol})，截断为{total_pos}手"
                 )
                 order.volume = total_pos
@@ -96,7 +96,7 @@ class MatchEngine:
                 order.status = OrderStatus.CANCELED
                 self.account.release_pending_margin(order, order.reference_price)
                 self.pending_orders.remove(order)
-                print(f"🗑️ [Broker 撤单] 订单 {order_id} 已成功撤销。")
+                print(f"[Broker Cancel] 订单 {order_id} 已成功撤销。")
                 return True
         return False
 
@@ -122,12 +122,14 @@ class MatchEngine:
 
             if order.order_type == OrderType.MARKET:
                 is_filled = True
-                slippage = self.fee_model.calculate_slippage(raw_code)
+                # 市价单按下一根 bar 的 open 成交，并按订单/策略配置追加不利滑点。
+                slippage = self.fee_model.calculate_slippage(raw_code, order.slippage_ticks)
                 exec_price = bar['open'] + slippage if order.direction == Direction.LONG else bar['open'] - slippage
                 multiplier = self.fee_model._get_meta_data(raw_code)['multiplier']
                 slippage_cost_value = slippage * order.volume * multiplier
 
             elif order.order_type == OrderType.LIMIT:
+                # 限价单只在 K 线高低点穿透时成交：可获得开盘跳空改善，但不额外扣滑点。
                 if order.direction == Direction.LONG and bar['low'] <= order.price:
                     is_filled = True
                     exec_price = min(order.price, bar['open'])
@@ -159,7 +161,7 @@ class MatchEngine:
                 self.account.process_trade(trade)
 
                 print(
-                    f"⚡ [Broker 撮合] {current_time} | {order.offset.value} {order.direction.value} {raw_code} "
+                    f"[Broker Match] {current_time} | {order.offset.value} {order.direction.value} {raw_code} "
                     f"{order.volume}手 | 成交价:{exec_price} | 费:￥{commission:.2f}"
                 )
 
@@ -198,7 +200,8 @@ class MatchEngine:
                 Offset.CLOSE_TODAY, old_close_price, current_time
             )
 
-        # 开新仓（按T日开盘价，含滑点）
+        # 换月开新仓等价于系统市价换仓，使用 fee_model 的默认滑点。
+        # GeneralSignalStrategy 会把策略 execution.slippage_ticks 同步到这里。
         slippage = self.fee_model.calculate_slippage(raw_code)
         exec_open = roll_open_price + slippage if pos_direction == Direction.LONG else roll_open_price - slippage
         multiplier = self.fee_model._get_meta_data(raw_code)['multiplier']
@@ -215,7 +218,7 @@ class MatchEngine:
         self.trade_history.append(open_trade)
         account.process_trade(open_trade)
 
-        print(f"   ↳ 开{pos_direction.value} {volume}手 @{exec_open:.1f} | 费:￥{commission:.2f}")
+        print(f"   -> 开{pos_direction.value} {volume}手 @{exec_open:.1f} | 费:￥{commission:.2f}")
 
     def _execute_rollover_close(self, raw_code: str, close_direction: Direction,
                                 pos_direction: Direction, volume: int,
@@ -239,4 +242,4 @@ class MatchEngine:
         self.trade_history.append(close_trade)
         account.process_trade(close_trade)
 
-        print(f"   ↳ 平{pos_direction.value} {volume}手 @{close_price:.1f} | 费:￥{commission:.2f}")
+        print(f"   -> 平{pos_direction.value} {volume}手 @{close_price:.1f} | 费:￥{commission:.2f}")

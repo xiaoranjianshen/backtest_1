@@ -7,12 +7,28 @@ from strategy.factor_template.factor import FactorTemplate
 
 
 class CrossMomentumFactor(FactorTemplate):
-    def __init__(self, broker, account, symbol='multi', rebalance_period=1, top_k=1, weight_per_leg=0.10):
-        # 将调仓频率传给父类模板
-        super().__init__(broker, account, symbol, rebalance_period=rebalance_period)
+    def __init__(
+        self,
+        broker,
+        account,
+        symbol='multi',
+        target_symbols=None,
+        rebalance_period=1,
+        top_k=1,
+        signal_scale=1.0,
+        **kwargs,
+    ):
+        super().__init__(
+            broker,
+            account,
+            symbol,
+            target_symbols=target_symbols,
+            rebalance_period=rebalance_period,
+            **kwargs,
+        )
 
         self.top_k = top_k  # 选取截面前 k 个和后 k 个品种
-        self.weight_per_leg = weight_per_leg  # 每个品种分配的资金权重
+        self.signal_scale = float(signal_scale)
 
     def calculate_weights(self, cross_section: dict) -> dict:
         """
@@ -44,10 +60,10 @@ class CrossMomentumFactor(FactorTemplate):
 
         # 做多跌得最惨的
         for sym in sorted_syms[:actual_k]:
-            target_weights[sym] = self.weight_per_leg  # 正权重代表做多
+            target_weights[sym] = self.signal_scale  # 正值代表做多
 
         # 做空涨得最好的
         for sym in sorted_syms[-actual_k:]:
-            target_weights[sym] = -self.weight_per_leg  # 负权重代表做空
+            target_weights[sym] = -self.signal_scale  # 负值代表做空
 
         return target_weights

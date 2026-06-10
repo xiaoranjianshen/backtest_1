@@ -45,7 +45,12 @@ class Account:
 
     def _init_position(self, pos_key: str):
         if pos_key not in self.positions:
-            self.positions[pos_key] = {'yd_volume': 0, 'td_volume': 0, 'avg_price': 0.0}
+            self.positions[pos_key] = {
+                'yd_volume': 0,
+                'td_volume': 0,
+                'avg_price': 0.0,
+                'frozen_margin': 0.0,
+            }
 
     def settle_daily(self):
         """
@@ -80,17 +85,20 @@ class Account:
 
     def check_order_validation(self, order: Order, reference_price: float) -> bool:
         raw_code = pure_product_code(order.symbol)
-        meta = self.fee_model._get_meta_data(raw_code)
-        margin_rate = meta['margin_rate']
-        multiplier = meta['multiplier']
 
         if order.offset == Offset.OPEN:
             required_margin = self.estimate_required_margin(raw_code, order.volume, reference_price)
+            estimated_commission = self.fee_model.calculate_commission(
+                raw_code, reference_price, order.volume, Offset.OPEN
+            )
+            # 开仓实际会同时扣保证金和手续费；只校验保证金会让极限资金账户成交后变成负可用。
+            required_cash = required_margin + estimated_commission
             effective_available = self.available - self.pending_margin
-            if effective_available < required_margin:
+            if effective_available < required_cash:
                 print(
-                    f"❌ [风控拦截] 资金不足！拟开仓 {raw_code} {order.volume}手，"
-                    f"需保证金:￥{required_margin:.2f}，可用(扣挂单):￥{effective_available:.2f}"
+                    f"[Risk Check] 资金不足：拟开仓 {raw_code} {order.volume}手，"
+                    f"需保证金+预估手续费:￥{required_cash:.2f}，"
+                    f"可用(扣挂单):￥{effective_available:.2f}"
                 )
                 return False
             return True
@@ -102,7 +110,7 @@ class Account:
             yd_vol = self.positions.get(pos_key, {}).get('yd_volume', 0)
             if yd_vol < order.volume:
                 print(
-                    f"❌ [风控拦截] 昨仓不足！拟平昨 {raw_code} {order.volume}手，"
+                    f"[Risk Check] 昨仓不足：拟平昨 {raw_code} {order.volume}手，"
                     f"实际昨仓仅有: {yd_vol}手"
                 )
                 return False
@@ -112,7 +120,7 @@ class Account:
             td_vol = self.positions.get(pos_key, {}).get('td_volume', 0)
             if td_vol < order.volume:
                 print(
-                    f"❌ [风控拦截] 今仓不足！拟平今 {raw_code} {order.volume}手，"
+                    f"[Risk Check] 今仓不足：拟平今 {raw_code} {order.volume}手，"
                     f"实际今仓仅有: {td_vol}手"
                 )
                 return False
@@ -135,8 +143,6 @@ class Account:
         multiplier = meta['multiplier']
         margin_rate = meta['margin_rate']
 
-        self.available -= trade.commission
-
         if trade.offset == Offset.OPEN:
             pos_key = self._get_position_key(raw_code, trade.direction)
             self._init_position(pos_key)
@@ -152,8 +158,10 @@ class Account:
             pos['td_volume'] += trade.volume
 
             margin_locked = trade.price * trade.volume * multiplier * margin_rate
+            self.available -= trade.commission
             self.available -= margin_locked
             self.frozen_margin += margin_locked
+            pos['frozen_margin'] = pos.get('frozen_margin', 0.0) + margin_locked
             return
 
         target_pos_dir = Direction.LONG if trade.direction == Direction.SHORT else Direction.SHORT
@@ -161,6 +169,12 @@ class Account:
         pos = self.positions.get(pos_key)
         if not pos:
             return
+
+        pos_total_before = self._position_volume(pos)
+        if pos_total_before <= 0:
+            return
+
+        self.available -= trade.commission
         open_avg_price = pos['avg_price']
 
         if target_pos_dir == Direction.LONG:
@@ -176,9 +190,14 @@ class Account:
         else:
             pos['yd_volume'] -= trade.volume
 
-        margin_released = open_avg_price * trade.volume * multiplier * margin_rate
+        pos_frozen_margin = pos.get(
+            'frozen_margin',
+            open_avg_price * pos_total_before * multiplier * margin_rate
+        )
+        margin_released = pos_frozen_margin * (trade.volume / pos_total_before)
         self.available += margin_released
-        self.frozen_margin -= margin_released
+        self.frozen_margin = max(0.0, self.frozen_margin - margin_released)
+        pos['frozen_margin'] = max(0.0, pos_frozen_margin - margin_released)
 
         if self._position_volume(pos) <= 0:
             del self.positions[pos_key]
@@ -186,7 +205,7 @@ class Account:
     def print_status(self, current_time, current_prices: dict = None):
         equity = self.get_total_equity(current_prices) if current_prices else self.available + self.frozen_margin
         print(
-            f"\n[{current_time}] 💰 账户快照 | 动态权益: ￥{equity:,.2f} | "
+            f"\n[Account] {current_time} | 动态权益: ￥{equity:,.2f} | "
             f"可用: ￥{self.available:,.2f} | 占用: ￥{self.frozen_margin:,.2f} | "
             f"累计平仓盈亏: ￥{self.total_pnl:,.2f}"
         )

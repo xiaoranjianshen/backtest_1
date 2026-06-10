@@ -8,11 +8,28 @@ from strategy.factor_template.factor import FactorTemplate
 
 
 class CompositeFactorStrategy(FactorTemplate):
-    def __init__(self, broker, account, symbol='multi', rebalance_period=5, top_k=2, weight_per_leg=0.10):
-        super().__init__(broker, account, symbol, rebalance_period=rebalance_period)
+    def __init__(
+        self,
+        broker,
+        account,
+        symbol='multi',
+        target_symbols=None,
+        rebalance_period=5,
+        top_k=2,
+        signal_scale=1.0,
+        **kwargs,
+    ):
+        super().__init__(
+            broker,
+            account,
+            symbol,
+            target_symbols=target_symbols,
+            rebalance_period=rebalance_period,
+            **kwargs,
+        )
 
         self.top_k = top_k
-        self.weight_per_leg = weight_per_leg
+        self.signal_scale = float(signal_scale)
 
     def calculate_weights(self, cross_section: dict) -> dict:
         # 1. 构建截面数据集
@@ -54,10 +71,10 @@ class CompositeFactorStrategy(FactorTemplate):
 
         # 做多得分最高的前 K 个
         for sym in symbols_sorted[:actual_k]:
-            target_weights[sym] = self.weight_per_leg
+            target_weights[sym] = self.signal_scale
 
         # 做空得分最低的后 K 个
         for sym in symbols_sorted[-actual_k:]:
-            target_weights[sym] = -self.weight_per_leg
+            target_weights[sym] = -self.signal_scale
 
         return target_weights

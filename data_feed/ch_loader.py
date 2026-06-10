@@ -23,10 +23,10 @@ class ClickHouseLoader:
         cache_path = os.path.join(CACHE_DIR, f"cache_{cache_hash}.parquet")
 
         if os.path.exists(cache_path):
-            print(f"📦 [Loader] 命中本地缓存: {cache_hash[:8]}... 加载中。")
+            print(f"[Data Loader] 命中本地缓存: {cache_hash[:8]}，正在加载。")
             return pd.read_parquet(cache_path)
 
-        print(f"📡 [Loader] 连接 ClickHouse 获取数据...")
+        print("[Data Loader] 正在从 ClickHouse 获取数据...")
         df = self._fetch_from_db(symbols, start_date, end_date, freq, data_type)
 
         if not df.empty:
@@ -36,7 +36,7 @@ class ClickHouseLoader:
     def _get_table_info(self, freq: str, data_type: str):
         route = DB_ROUTING_MAP.get(freq, {}).get(data_type)
         if not route:
-            raise ValueError(f"❌ 找不到对应的数据表配置: freq={freq}, data_type={data_type}")
+            raise ValueError(f"找不到对应的数据表配置: freq={freq}, data_type={data_type}")
         return route['db'], route['table']
 
     def _fetch_from_db(self, symbols: list, start_date: str, end_date: str, freq: str, data_type: str) -> pd.DataFrame:
@@ -45,15 +45,15 @@ class ClickHouseLoader:
         skip_symbol_filter = (data_type == 'all' and len(symbols) >= 50)
         preview_symbols = symbols[:5]
         print(
-            f"🧭 [Loader] 连接信息 -> host={CH_HOST}, user={CH_USER}, db={db_name}, table={table_name}, "
+            f"[Data Loader] 连接信息 -> host={CH_HOST}, user={CH_USER}, db={db_name}, table={table_name}, "
             f"freq={freq}, data_type={data_type}, symbols={len(symbols)}"
         )
-        print(f"🔎 [Loader] 符号预览 -> {preview_symbols}")
-        print(f"🗓️ [Loader] 时间范围 -> {start_date} ~ {end_date}")
+        print(f"[Data Loader] 符号预览 -> {preview_symbols}")
+        print(f"[Data Loader] 时间范围 -> {start_date} ~ {end_date}")
         if skip_symbol_filter:
-            print("🪄 [Loader] 检测到 all + 全市场模式，本次将跳过 symbol 过滤，直接按时间范围导出全表。")
+            print("[Data Loader] 检测到 all + 全市场模式，本次将跳过 symbol 过滤，直接按时间范围导出全表。")
 
-        # 💥 核心逻辑：根据请求的是 Tick 还是 K线，动态组装查询字段！
+        # 根据请求的是 Tick 还是 K 线，动态组装查询字段。
         if freq == 'tick':
             # Tick 数据的专属查询结构
             symbol_filter_clause = "" if skip_symbol_filter else f"AND symbol IN ({symbols_str})"
@@ -107,10 +107,10 @@ class ClickHouseLoader:
             """
 
         try:
-            print(f"🧾 [Loader] SQL预览 -> {query[:500].strip()}...")
+            print(f"[Data Loader] SQL预览 -> {query[:500].strip()}...")
             result, columns = self.client.execute(query, with_column_types=True)
             df = pd.DataFrame(result, columns=[c[0] for c in columns])
             return df
         except Exception as e:
-            print(f"❌ ClickHouse 查询失败: {e}")
+            print(f"ClickHouse 查询失败: {e}")
             return pd.DataFrame()

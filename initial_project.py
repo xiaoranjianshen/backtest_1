@@ -5,7 +5,7 @@ from pathlib import Path
 def create_structure():
     # 获取当前运行脚本的所在目录作为项目根目录
     base_dir = Path(__file__).parent.resolve()
-    print(f"🚀 开始在 {base_dir} 构建回测引擎基础骨架...")
+    print(f"[Project Init] 开始在 {base_dir} 构建回测引擎基础结构...")
 
     # 1. 定义需要创建的文件夹目录
     directories = [
@@ -21,7 +21,7 @@ def create_structure():
     for d in directories:
         dir_path = base_dir / d
         dir_path.mkdir(parents=True, exist_ok=True)
-        print(f"📁 创建目录: {d}/")
+        print(f"[Project Init] 创建目录: {d}/")
 
     # 2. 定义需要创建的文件及其初始内容
     files_to_create = {
@@ -66,11 +66,11 @@ cache_data/
         if not full_path.exists():
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(content)
-            print(f"📄 创建文件: {file_path}")
+            print(f"[Project Init] 创建文件: {file_path}")
         else:
-            print(f"⚠️ 文件已存在，跳过: {file_path}")
+            print(f"[Project Init] 文件已存在，跳过: {file_path}")
 
-    print("\n✅ 回测引擎结构初始化完成！")
+    print("\n[Project Init] 回测引擎结构初始化完成。")
 
 
 if __name__ == "__main__":

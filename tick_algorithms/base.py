@@ -271,7 +271,9 @@ class MarketExecutor(TickExecutionAlgorithm):
         last_price = float(tick.get('last_price', 0))
         bid = float(tick.get('bid_price_1', last_price))
         ask = float(tick.get('ask_price_1', last_price))
-        base_vol = int(tick.get('bid_volume_1', 0))  # 1档盘口量
+        is_buy = 'long' in direction.lower()
+        base_vol = int(tick.get('ask_volume_1' if is_buy else 'bid_volume_1', 0))  # 1档盘口量
+        tick_size = float(self.account.fee_model._get_meta_data(self.symbol).get('tick_size', 1.0))
 
         # 螺纹钢期货每手10吨，100手=1000吨是大单
         # 假设1档实际能成交的比例（真实市场中，大单往往超出1档）
@@ -280,8 +282,6 @@ class MarketExecutor(TickExecutionAlgorithm):
             base_vol = 10
         # 大单情况下，假设只有30%的量在1档，其余需要滑移
         effective_vol = max(10, int(base_vol * 0.3))
-
-        is_buy = 'long' in direction.lower()
 
         # 模拟各档盘口量（衰减）
         levels = []
@@ -296,12 +296,12 @@ class MarketExecutor(TickExecutionAlgorithm):
             filled_vol = min(remaining, level_vol)
             levels.append((price, filled_vol))
             remaining -= filled_vol
-            price += 1 if is_buy else -1  # 往不利方向移动1跳
+            price += tick_size if is_buy else -tick_size  # 往不利方向移动1跳
 
         if remaining > 0:
             # 还有剩余，向更远端扩展
             last_price_level = levels[-1][0] if levels else price
-            extra_dir = 1 if is_buy else -1
+            extra_dir = tick_size if is_buy else -tick_size
             while remaining > 0:
                 filled_vol = min(remaining, effective_vol)
                 levels.append((last_price_level + extra_dir, filled_vol))

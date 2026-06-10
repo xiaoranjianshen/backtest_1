@@ -1,125 +1,103 @@
 # -*- coding: utf-8 -*-
 """
-多因子截面策略模板 (FactorTemplate)
-职责：提取横截面数据、获取子类目标权重矩阵、执行多品种自动调仓对齐
+General cross-sectional factor strategy template.
+
+Subclasses implement calculate_weights(). Returned weights are treated as
+relative signal strength; actual lots are produced by the general sizing policy.
 """
-import pandas as pd
 from datetime import datetime
-from strategy.base import BaseStrategy
-from broker.order import Order, Direction, Offset, OrderType
+
+import pandas as pd
+
+from strategy.general_template import GeneralSignalStrategy
 
 
-class FactorTemplate(BaseStrategy):
-    def __init__(self, broker, account, symbol='multi', rebalance_period: int = 1):
-        """
-        :param rebalance_period: 调仓周期 (默认 1 根 K 线调仓一次)
-        """
-        # 多因子通常针对全市场，symbol 只是个占位符
-        super().__init__(broker, account, symbol)
+class FactorTemplate(GeneralSignalStrategy):
+    def __init__(
+        self,
+        broker,
+        account,
+        symbol="multi",
+        target_symbols=None,
+        rebalance_period: int = 1,
+        **kwargs,
+    ):
+        super().__init__(
+            broker=broker,
+            account=account,
+            symbol=symbol,
+            target_symbols=target_symbols,
+            **kwargs,
+        )
 
-        self.rebalance_period = rebalance_period
+        self.rebalance_period = int(rebalance_period)
+        if self.rebalance_period <= 0:
+            raise ValueError("rebalance_period must be positive")
         self.bar_count = 0
 
-        # 维护当前全市场各品种的真实持仓手数 {'rb': 10, 'i': -5}
-        self.current_volumes = {}
-
     def on_init(self):
-        print(f"[多因子模板] 初始化完成 | 调仓频率: 每 {self.rebalance_period} 周期")
-        self.inited = True
-
-    def _send_cross_order(self, sym: str, direction: Direction, offset: Offset, volume: int,
-                          current_time: datetime, reference_price: float):
-        """多因子专属发单通道：允许向非 self.symbol 的特定品种发送指令"""
-        order = Order(
-            symbol=sym, direction=direction, offset=offset,
-            volume=volume, price=0.0, order_type=OrderType.MARKET, insert_time=current_time
-        )
-        self.broker.insert_order(order, reference_price=reference_price)
+        super().on_init()
+        print(f"[Strategy Factor] rebalance_period={self.rebalance_period}")
 
     def on_bar(self, current_time: datetime, bar_data: dict):
-        """核心驱动：每到达调仓周期，提取横截面数据并执行调仓"""
+        self.current_time = current_time
         self.bar_count += 1
 
-        # 1. 周期控制：未到调仓日，直接放行
         if self.bar_count % self.rebalance_period != 0:
             return
 
-        # 2. 提取有效横截面数据 (剔除停牌或无数据的品种)
+        signals = self.generate_signals(bar_data) or {}
+        records = self.rebalancer.rebalance(signals, bar_data)
+
+        if self.record_signals:
+            for record in records:
+                self.signal_records.append({"datetime": current_time, **record})
+
+    def generate_signals(self, bar_data: dict) -> dict:
         cross_section = {
-            sym: data for sym, data in bar_data.items()
-            if data and not pd.isna(data.get('close'))
+            sym: data
+            for sym, data in bar_data.items()
+            if sym in self.symbols and data and not pd.isna(data.get("close", pd.NA))
         }
 
         if not cross_section:
-            return
+            return {}
 
-        # 3. 呼叫子类：传入横截面，获取目标权重向量
-        # 期望返回格式: {'rb': 0.10, 'i': -0.15, 'ta': 0.05}
-        target_weights = self.calculate_weights(cross_section)
+        target_weights = self.calculate_weights(cross_section) or {}
+        max_abs_weight = max([abs(float(value)) for value in target_weights.values()] + [1.0])
+        signals = {}
 
-        # 4. 执行截面调仓
-        self._rebalance_portfolio(target_weights, cross_section, current_time)
+        symbols_to_check = set(cross_section) | {
+            symbol for symbol in self.symbols if self.get_net_position(symbol) != 0
+        }
+
+        for sym in symbols_to_check:
+            weight = float(target_weights.get(sym, 0.0))
+            if weight > 0:
+                signals[sym] = {
+                    "signal": 1,
+                    "position_mode": "target",
+                    "size_scale": abs(weight) / max_abs_weight,
+                    "reason": "factor_long",
+                    "metrics": {"factor_weight": weight},
+                }
+            elif weight < 0:
+                signals[sym] = {
+                    "signal": -1,
+                    "position_mode": "target",
+                    "size_scale": abs(weight) / max_abs_weight,
+                    "reason": "factor_short",
+                    "metrics": {"factor_weight": weight},
+                }
+            elif self.get_net_position(sym) != 0:
+                signals[sym] = {
+                    "signal": 0,
+                    "position_mode": "flat",
+                    "reason": "factor_exit",
+                    "metrics": {"factor_weight": 0.0},
+                }
+
+        return signals
 
     def calculate_weights(self, cross_section: dict) -> dict:
-        """纯虚函数：留给具体的因子逻辑去实现截面打分与权重分配"""
-        raise NotImplementedError("子类必须实现 calculate_weights 方法！")
-
-    def _rebalance_portfolio(self, target_weights: dict, cross_section: dict, current_time: datetime):
-        """核心路由：计算目标手数差额，生成一揽子调仓指令"""
-        target_volumes = {}
-
-        # A. 计算目标绝对手数
-        for sym, weight in target_weights.items():
-            if weight == 0 or sym not in cross_section:
-                continue
-
-            price = cross_section[sym]['close']
-            meta = self.account.fee_model._get_meta_data(sym)
-            margin_per_lot = price * meta['multiplier'] * meta['margin_rate']
-
-            # 使用初始资金作为静态计算基准 (也可改为动态权益)
-            target_margin = self.account.initial_capital * abs(weight)
-            vol = int(target_margin // margin_per_lot)
-
-            if vol > 0:
-                target_volumes[sym] = vol if weight > 0 else -vol
-
-        # B. 调仓第一阶段：平仓与减仓 (必须先释放保证金)
-        for sym in list(self.current_volumes.keys()):
-            curr_v = self.current_volumes.get(sym, 0)
-            targ_v = target_volumes.get(sym, 0)
-
-            if curr_v == 0 or sym not in cross_section:
-                continue
-
-            # 多头减仓或反向
-            if curr_v > 0 and targ_v < curr_v:
-                close_vol = curr_v - max(targ_v, 0)
-                print(f"[{current_time}] [调仓] {sym} 平多 {close_vol} 手")
-                self._send_cross_order(sym, Direction.SHORT, Offset.CLOSE, close_vol, current_time, cross_section[sym]['close'])
-                self.current_volumes[sym] -= close_vol
-
-            # 空头减仓或反向
-            elif curr_v < 0 and targ_v > curr_v:
-                close_vol = abs(curr_v) - abs(min(targ_v, 0))
-                print(f"[{current_time}] [调仓] {sym} 平空 {close_vol} 手")
-                self._send_cross_order(sym, Direction.LONG, Offset.CLOSE, close_vol, current_time, cross_section[sym]['close'])
-                self.current_volumes[sym] += close_vol
-
-        # C. 调仓第二阶段：开仓与加仓
-        for sym, targ_v in target_volumes.items():
-            curr_v = self.current_volumes.get(sym, 0)
-
-            # 多头加仓
-            if targ_v > 0 and targ_v > curr_v:
-                open_vol = targ_v - max(curr_v, 0)
-                print(f"[{current_time}] [调仓] {sym} 开多 {open_vol} 手 (权重: {target_weights[sym] * 100:.1f}%)")
-                self._send_cross_order(sym, Direction.LONG, Offset.OPEN, open_vol, current_time, cross_section[sym]['close'])
-                self.current_volumes[sym] = targ_v
-
-            # 空头加仓
-            elif targ_v < 0 and targ_v < curr_v:
-                open_vol = abs(targ_v) - abs(min(curr_v, 0))
-                print(f"[{current_time}] [调仓] {sym} 开空 {open_vol} 手 (权重: {target_weights[sym] * 100:.1f}%)")
-                self._send_cross_order(sym, Direction.SHORT, Offset.OPEN, open_vol, current_time, cross_section[sym]['close'])
-                self.current_volumes[sym] = targ_v
+        raise NotImplementedError("子类必须实现 calculate_weights(cross_section)")

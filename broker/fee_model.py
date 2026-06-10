@@ -10,7 +10,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
-# 💥 引入我们刚刚核对完毕的绝对权威字典 FEE_DICT
+# 交易费率和合约乘数统一来自 config.FEE_DICT。
 from config import FEE_DICT
 from .order import Offset
 
@@ -32,7 +32,7 @@ class FeeModel:
         meta = FEE_DICT.get(raw_code) or FEE_DICT.get(raw_code.upper()) or FEE_DICT.get(raw_code.lower())
 
         if not meta:
-            print(f"⚠️ [FeeModel] 警告：品种 {symbol} 未在 FEE_DICT 配置！将使用极其昂贵的默认惩罚费率。")
+            print(f"[Fee Model Warning] 品种 {symbol} 未在 FEE_DICT 配置，将使用默认费率。")
             # 兜底防御：给一个极高成本，逼迫回测者去 config 里补全字典
             return {'multiplier': 10, 'tick_size': 1.0, 'fee_type': 'ratio',
                     'fee_open': 0.001, 'fee_close_history': 0.001, 'fee_close_today': 0.005}
@@ -44,12 +44,13 @@ class FeeModel:
         meta = self._get_meta_data(symbol)
         return meta['multiplier'], meta['tick_size']
 
-    def calculate_slippage(self, symbol: str) -> float:
+    def calculate_slippage(self, symbol: str, slippage_ticks: float = None) -> float:
         """
         计算单边滑点劣化的具体绝对数值 (例如螺纹钢 1 跳就是 1.0 元)
         """
         meta = self._get_meta_data(symbol)
-        slippage_value = meta['tick_size'] * self.default_slippage_ticks
+        ticks = self.default_slippage_ticks if slippage_ticks is None else float(slippage_ticks)
+        slippage_value = meta['tick_size'] * ticks
         return slippage_value
 
     def calculate_commission(self, symbol: str, price: float, volume: int, offset: Offset) -> float:

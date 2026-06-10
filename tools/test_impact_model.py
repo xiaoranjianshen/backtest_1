@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-测试 Market Impact Model 的冷酷逻辑
+测试 Market Impact Model 的执行成本逻辑
 
 验证：
 1. 市价单立即成交的场景
@@ -8,9 +8,13 @@
 3. 不同 impact_step_vol 对冲击的影响
 """
 import sys
-sys.path.insert(0, '.')
+from pathlib import Path
 
-from backtest_1.tick_impact_model import MarketImpactModel, ExecutionPlan
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from tick_impact_model import MarketImpactModel, ExecutionPlan
 from datetime import datetime, timedelta
 
 # 创建冲击模型
@@ -119,7 +123,7 @@ print(f"\n信号时刻: bid=3311, ask=3312, arrival_mid={arrival:.1f}")
 
 # 市价单：立即成交100手
 result_market = impact.calculate_execution("open_long", tick_base, 100, arrival)
-print(f"\n[市价单] 立即成交100手:")
+print(f"\n[Market Order] 立即成交100手:")
 print(f"  均价={result_market[0]:.2f}, 滑点={result_market[1]:.2f}")
 print(f"  明细: {result_market[2]}")
 

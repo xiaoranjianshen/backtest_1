@@ -1,0 +1,64 @@
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.100.23:8501
+  External URL: http://81.28.13.120:8501
+
+────────────────────────── Traceback (most recent call last) ───────────────────────────
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\exec_code.py:129 in exec_func_with_error_handling                 
+                                                                                        
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\script_runner.py:789 in code_to_exec                              
+                                                                                        
+  C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\app.py:40 in <module>                 
+                                                                                        
+     37 )                                                                               
+     38 from run_from_config import STRATEGY_SPECS, available_strategy_specs            
+     39                                                                                 
+  >  40                                                                                 
+     41 st.set_page_config(page_title=APP_TITLE, page_icon=APP_ICON, layout=LAYOUT)     
+     42 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)                                 
+     43                                                                                 
+────────────────────────────────────────────────────────────────────────────────────────
+ImportError: cannot import name 'normalize_strategy_key' from 'run_from_config' 
+(C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\run_from_config.py)
+────────────────────────── Traceback (most recent call last) ───────────────────────────
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\exec_code.py:129 in exec_func_with_error_handling                 
+                                                                                        
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\script_runner.py:789 in code_to_exec                              
+                                                                                        
+  C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\app.py:40 in <module>                 
+                                                                                        
+     37 │   SIZING_LABELS,                                                              
+     38 │   format_with_mapping,                                                        
+     39 )                                                                               
+  >  40 from run_from_config import STRATEGY_SPECS, available_strategy_specs, normaliz  
+     41 from ui_config import ACTIVE_REPORT_CONFIG_PATH, APP_ICON, APP_TITLE, CUSTOM_C  
+     42                                                                                 
+     43                                                                                 
+────────────────────────────────────────────────────────────────────────────────────────
+ImportError: cannot import name 'normalize_strategy_key' from 'run_from_config' 
+(C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\run_from_config.py)
+────────────────────────── Traceback (most recent call last) ───────────────────────────
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\exec_code.py:129 in exec_func_with_error_handling                 
+                                                                                        
+  C:\Users\tnori\AppData\Local\Programs\Python\Python311\Lib\site-packages\streamlit\r  
+  untime\scriptrunner\script_runner.py:789 in code_to_exec                              
+                                                                                        
+  C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\app.py:40 in <module>                 
+                                                                                        
+     37 │   SIZING_LABELS,                                                              
+     38 │   format_with_mapping,                                                        
+     39 )                                                                               
+  >  40 from run_from_config import STRATEGY_SPECS, available_strategy_specs, normaliz  
+     41 from ui_config import ACTIVE_REPORT_CONFIG_PATH, APP_ICON, APP_TITLE, CUSTOM_C  
+     42                                                                                 
+     43                                                                                 
+────────────────────────────────────────────────────────────────────────────────────────
+ImportError: cannot import name 'normalize_strategy_key' from 'run_from_config' 
+(C:\Users\tnori\PyCharmMiscProject\backtest_1\ui\run_from_config.py)

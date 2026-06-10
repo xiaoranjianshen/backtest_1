@@ -24,7 +24,7 @@ class DataAligner:
         :return: 经过严格对齐和前值填充后的 MultiIndex 宽表
         """
         if raw_df.empty:
-            print("⚠️ [Aligner] 收到空数据，跳过对齐逻辑。")
+            print("[Data Aligner Warning] 收到空数据，跳过对齐逻辑。")
             return pd.DataFrame()
 
         # 确保时间戳格式正确并排序
@@ -32,7 +32,7 @@ class DataAligner:
         raw_df = raw_df.sort_values(by=['datetime', 'symbol']).reset_index(drop=True)
 
         # ---------------------------------------------------------
-        # 💥 Tick 数据可能有重复时间戳（同一时刻多条数据），需要先聚合
+        # Tick 数据可能有重复时间戳（同一时刻多条数据），需要先聚合。
         # ---------------------------------------------------------
         if 'last_price' in raw_df.columns or 'ask_price_1' in raw_df.columns:
             # Tick 数据：取每个时间点的最后一条
@@ -42,8 +42,7 @@ class DataAligner:
         # ---------------------------------------------------------
         # 步骤 1：并集时间轴提取 (Union Datetime Index)
         # ---------------------------------------------------------
-        # 提取全市场所有品种发生过交易的“绝对真实时间点”
-        # 这样能自动、完美地契合国内期货各品种不同的交易节（如黄金到02:30，螺纹到23:00）
+        # 提取全市场所有品种发生过交易的时间点并集，兼容不同品种的交易时段。
         master_time_index = pd.DatetimeIndex(raw_df['datetime'].unique()).sort_values()
 
         # ---------------------------------------------------------
@@ -51,18 +50,18 @@ class DataAligner:
         # ---------------------------------------------------------
         # 转换后，行索引为 datetime，列变为二级复合列 (MultiIndex): Level 0 是字段名，Level 1 是品种代码
         # 例如: ('close', 'KQ.m@SHFE.rb')
-        print(f"🔄 [Aligner] 正在对齐 {raw_df['symbol'].nunique()} 个品种，生成宽表矩阵...")
+        print(f"[Data Aligner] 正在对齐 {raw_df['symbol'].nunique()} 个品种，生成宽表矩阵...")
         wide_df = raw_df.pivot(index='datetime', columns='symbol')
 
-        # 将宽表强行贴合到完整的并集时间轴上，缺少的分钟会自动变成 NaN
+        # 将宽表对齐到完整并集时间轴，缺少的分钟会变成 NaN。
         wide_df = wide_df.reindex(master_time_index)
 
         # ---------------------------------------------------------
         # 步骤 3：分类高精度填充 (双核架构：智能兼容 K线 与 Tick)
         # ---------------------------------------------------------
-        # 不同属性的字段，填充逻辑必须彻底隔离！
+        # 不同属性的字段，填充逻辑必须分开处理。
 
-        # 💥 探针：根据是否存在 'close' 字段来判断是 K线 还是 Tick
+        # 根据是否存在 'close' 字段判断是 K 线还是 Tick。
         is_kline = 'close' in wide_df.columns.levels[0]
 
         if is_kline:
@@ -74,9 +73,9 @@ class DataAligner:
                 if field in wide_df.columns.levels[0]:
                     wide_df[field] = wide_df[field].ffill()
 
-            # 💥 核心防错：未成交分钟的价格收敛清洗
+            # 未成交分钟的价格收敛清洗。
             # 如果某一分钟是由于没成交而“补”出来的虚拟K线，它在这一分钟里没有产生波动。
-            # 它的 open, high, low 必须强行等于它此刻的 close（即上一分钟的收盘价）。
+            # 它的 open, high, low 应等于此刻的 close（即上一分钟的收盘价）。
             # 如果不收敛，直接取 ffill 的结果，会导致这一分钟出现错误的日内最高最低价，引发策略误判。
             if 'volume' in wide_df.columns.levels[0] and 'close' in wide_df.columns.levels[0]:
                 # 找出所有成交量为 NaN 的位置，这些就是缺失被补齐的分钟
@@ -129,11 +128,10 @@ class DataAligner:
         # ---------------------------------------------------------
         # 步骤 4：截断品种上市前的盲区
         # ---------------------------------------------------------
-        # 并集时间轴会导致在某些品种尚未上市的历史时期，也被强行塞入了前值填充的价格。
-        # 我们必须把所有品种在正式产生第一条真实成交量之前的“伪数据”全部剔除。
+        # 并集时间轴可能覆盖某些品种上市前的历史区间，需要剔除全市场无价格的行。
         if 'close' in wide_df.columns.levels[0]:
             # 找出全市场整行全部为 NaN 的行（代表这段时间没有任何品种上市，极少发生，做个兜底）
             wide_df = wide_df.dropna(how='all', subset=[('close', sym) for sym in wide_df.columns.levels[1]])
 
-        print(f"📊 [Aligner] 矩阵对齐清洗完毕。当前数据矩阵形状 (Shape): {wide_df.shape}")
+        print(f"[Data Aligner] 矩阵对齐清洗完成，shape={wide_df.shape}")
         return wide_df

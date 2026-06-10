@@ -7,9 +7,9 @@ import re
 # ------------------------------------------
 # 1. 基础设施配置 (Infrastructure)
 # ------------------------------------------
-CH_HOST = '192.168.99.12'
-CH_USER = 'luohaoran'
-CH_PASS = 'lhr.2026'
+CH_HOST = os.getenv('BACKTEST_CH_HOST', '192.168.99.12')
+CH_USER = os.getenv('BACKTEST_CH_USER', 'luohaoran')
+CH_PASS = os.getenv('BACKTEST_CH_PASS', 'lhr.2026')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')
@@ -17,7 +17,7 @@ CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')
 
 # ------------------------------------------
 # 2. 核心枚举字典 (Options / Enums)
-# ⚠️ 极其重要：外部调用 data_provider 时，必须从以下列表中选择参数！
+# 外部调用 data_provider 时，应从以下列表中选择参数。
 # ------------------------------------------
 
 # 【可选频率 freq】
@@ -158,10 +158,10 @@ NAME_TO_CODE = {
 # fee_close_today: 平今仓费率/金额
 
 FEE_DICT = {
-    # ================= 🟢 已精准核对：上海期货交易所 (SHFE) =================
+    # ================= 上海期货交易所 (SHFE) =================
     'rb': { 'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0001 },
     'hc': { 'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0001 },
-    'cu': { 'multiplier': 5, 'tick_size': 10.0, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.0001 }, # ⚠️ 铜平今加倍
+    'cu': { 'multiplier': 5, 'tick_size': 10.0, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.0001 }, # 铜平今费率加倍
     'al': { 'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0 },
     'zn': { 'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0 },
     'pb': { 'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.00004, 'fee_close_history': 0.00004, 'fee_close_today': 0.00004 },
@@ -169,7 +169,7 @@ FEE_DICT = {
     'ss': { 'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 2.0, 'fee_close_history': 2.0, 'fee_close_today': 2.0 },
     'ni': { 'multiplier': 1, 'tick_size': 10.0, 'margin_rate': 0.14, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0 },
     'sn': { 'multiplier': 1, 'tick_size': 10.0, 'margin_rate': 0.14, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0 },
-    'au': { 'multiplier': 1000, 'tick_size': 0.02, 'margin_rate': 0.16, 'fee_type': 'fixed', 'fee_open': 20.0, 'fee_close_history': 20.0, 'fee_close_today': 20.0 }, # ⚠️ 使用标准合约费率
+    'au': { 'multiplier': 1000, 'tick_size': 0.02, 'margin_rate': 0.16, 'fee_type': 'fixed', 'fee_open': 20.0, 'fee_close_history': 20.0, 'fee_close_today': 20.0 }, # 标准合约费率
     'ag': { 'multiplier': 15, 'tick_size': 1.0, 'margin_rate': 0.21, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.00005 },
     'ru': { 'multiplier': 10, 'tick_size': 5.0, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0 },
     'bu': { 'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.00005 },
@@ -177,22 +177,22 @@ FEE_DICT = {
     'br': { 'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.00002, 'fee_close_history': 0.00002, 'fee_close_today': 0.00002 },
     'ad': { 'multiplier': 10, 'tick_size': 5.0, 'margin_rate': 0.07, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.00005 },
     'op': { 'multiplier': 40, 'tick_size': 2.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.00005, 'fee_close_history': 0.00005, 'fee_close_today': 0.00005 },
-    'fu': { 'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0003 }, # ⚠️ 燃油平今惩罚三倍
+    'fu': { 'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0003 }, # 燃油平今费率三倍
 
-    # ----------------- 🟡 精准核对：上海国际能源交易中心 (INE, 严格小写) -----------------
+    # ----------------- 上海国际能源交易中心 (INE, 小写代码) -----------------
     'nr': {'multiplier': 10, 'tick_size': 5.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.00002,'fee_close_history': 0.00002, 'fee_close_today': 0.00002},
     'bc': {'multiplier': 5, 'tick_size': 10.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.00001,'fee_close_history': 0.00001, 'fee_close_today': 0.00001},
-    'sc': {'multiplier': 1000, 'tick_size': 0.1, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 40.0, 'fee_close_history': 40.0, 'fee_close_today': 240.0},  # ⚠️ 原油平今惩罚高达240元
-    'lu': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0003},  # ⚠️ 低硫燃料油平今三倍
-    'ec': {'multiplier': 50, 'tick_size': 0.1, 'margin_rate': 0.17, 'fee_type': 'ratio', 'fee_open': 0.0006,'fee_close_history': 0.0006, 'fee_close_today': 0.0012},  # ⚠️ 集运欧线平今翻倍
+    'sc': {'multiplier': 1000, 'tick_size': 0.1, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 40.0, 'fee_close_history': 40.0, 'fee_close_today': 240.0},  # 原油平今费率 240 元
+    'lu': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0003},  # 低硫燃料油平今费率三倍
+    'ec': {'multiplier': 50, 'tick_size': 0.1, 'margin_rate': 0.17, 'fee_type': 'ratio', 'fee_open': 0.0006,'fee_close_history': 0.0006, 'fee_close_today': 0.0012},  # 集运欧线平今费率翻倍
 
-    # ----------------- 🟡 精准核对：郑州商品交易所 (CZCE, 严格大写) -----------------
+    # ----------------- 郑州商品交易所 (CZCE, 大写代码) -----------------
     'CF': {'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.07, 'fee_type': 'fixed', 'fee_open': 4.3,'fee_close_history': 4.3, 'fee_close_today': 4.3},
     'CY': {'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.08, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
     'SR': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.08, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'TA': {'multiplier': 5, 'tick_size': 2.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'PF': {'multiplier': 5, 'tick_size': 2.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 2.0,'fee_close_history': 2.0, 'fee_close_today': 2.0},
-    'FG': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 6.0,'fee_close_history': 6.0, 'fee_close_today': 6.0},  # ⚠️ 玻璃更新为6元
+    'FG': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 6.0,'fee_close_history': 6.0, 'fee_close_today': 6.0},  # 玻璃手续费 6 元
     'MA': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'SA': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.0002,'fee_close_history': 0.0002, 'fee_close_today': 0.0002},
     'RM': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 1.5, 'fee_close_history': 1.5, 'fee_close_today': 1.5},
@@ -203,7 +203,7 @@ FEE_DICT = {
     'RI': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.15, 'fee_type': 'fixed', 'fee_open': 2.5,'fee_close_history': 2.5, 'fee_close_today': 2.5},  # 早籼稻
     'LR': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.15, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0},  # 晚籼稻
     'JR': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.15, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},  # 粳稻
-    'AP': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 5.0,'fee_close_history': 5.0, 'fee_close_today': 20.0},  # ⚠️ 苹果平今惩罚高达20元
+    'AP': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 5.0,'fee_close_history': 5.0, 'fee_close_today': 20.0},  # 苹果平今手续费 20 元
     'UR': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'PK': {'multiplier': 5, 'tick_size': 2.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 4.0,'fee_close_history': 4.0, 'fee_close_today': 4.0},
     'RS': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.20, 'fee_type': 'fixed', 'fee_open': 2.0, 'fee_close_history': 2.0, 'fee_close_today': 2.0},  # 油菜籽
@@ -215,7 +215,7 @@ FEE_DICT = {
     'CJ': {'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.12, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'PX': {'multiplier': 5, 'tick_size': 2.0, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
 
-    # ----------------- 🟡 精准核对：大连商品交易所 (DCE, 严格小写) -----------------
+    # ----------------- 大连商品交易所 (DCE, 小写代码) -----------------
     'a': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'fixed', 'fee_open': 2.0,'fee_close_history': 2.0, 'fee_close_today': 2.0},
     'b': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
     'm': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'fixed', 'fee_open': 1.5,'fee_close_history': 1.5, 'fee_close_today': 1.5},
@@ -228,7 +228,7 @@ FEE_DICT = {
     'cs': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.08, 'fee_type': 'fixed', 'fee_open': 1.5,'fee_close_history': 1.5, 'fee_close_today': 1.5},
     'eg': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'eb': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},
-    'pg': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 6.0,'fee_close_history': 6.0, 'fee_close_today': 12.0},  # ⚠️ PG平今翻倍为12元
+    'pg': {'multiplier': 20, 'tick_size': 1.0, 'margin_rate': 0.11, 'fee_type': 'fixed', 'fee_open': 6.0,'fee_close_history': 6.0, 'fee_close_today': 12.0},  # PG 平今手续费 12 元
     'rr': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.08, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
     'bb': {'multiplier': 500, 'tick_size': 0.05, 'margin_rate': 0.15, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'fb': {'multiplier': 10, 'tick_size': 0.05, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
@@ -240,18 +240,18 @@ FEE_DICT = {
     'v': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
     'pp': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
 
-    # ----------------- 🟡 精准核对：广州期货交易所 (GFEX, 严格小写) -----------------
+    # ----------------- 广州期货交易所 (GFEX, 小写代码) -----------------
     'si': {'multiplier': 5, 'tick_size': 5.0, 'margin_rate': 0.13, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'lc': {'multiplier': 1, 'tick_size': 20.0, 'margin_rate': 0.17, 'fee_type': 'ratio', 'fee_open': 0.00032,'fee_close_history': 0.00032, 'fee_close_today': 0.00032},
     'ps': {'multiplier': 3, 'tick_size': 5.0, 'margin_rate': 0.15, 'fee_type': 'ratio', 'fee_open': 0.0005,'fee_close_history': 0.0005, 'fee_close_today': 0.0005},
     'pt': {'multiplier': 1000, 'tick_size': 0.05, 'margin_rate': 0.19, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'pd': {'multiplier': 1000, 'tick_size': 0.05, 'margin_rate': 0.19, 'fee_type': 'ratio', 'fee_open': 0.0001, 'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
 
-    # ----------------- 🟡 精准核对：中国金融期货交易所 (CFFEX, 严格大写) -----------------
-    'IF': {'multiplier': 300, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # ⚠️ 股指平今10倍惩罚
-    'IH': {'multiplier': 300, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023,'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # ⚠️ 股指平今10倍惩罚
-    'IC': {'multiplier': 200, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # ⚠️ 股指平今10倍惩罚
-    'IM': {'multiplier': 200, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # ⚠️ 股指平今10倍惩罚
+    # ----------------- 中国金融期货交易所 (CFFEX, 大写代码) -----------------
+    'IF': {'multiplier': 300, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # 股指平今费率约为普通平仓 10 倍
+    'IH': {'multiplier': 300, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023,'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # 股指平今费率约为普通平仓 10 倍
+    'IC': {'multiplier': 200, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # 股指平今费率约为普通平仓 10 倍
+    'IM': {'multiplier': 200, 'tick_size': 0.2, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.000023, 'fee_close_history': 0.000023, 'fee_close_today': 0.00023},  # 股指平今费率约为普通平仓 10 倍
     'TS': {'multiplier': 20000, 'tick_size': 0.002, 'margin_rate': 0.005, 'fee_type': 'fixed', 'fee_open': 3.0, 'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'TF': {'multiplier': 10000, 'tick_size': 0.005, 'margin_rate': 0.012, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},
     'T': {'multiplier': 10000, 'tick_size': 0.005, 'margin_rate': 0.02, 'fee_type': 'fixed', 'fee_open': 3.0,'fee_close_history': 3.0, 'fee_close_today': 3.0},

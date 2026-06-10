@@ -52,17 +52,17 @@ class DataProvider:
                 # 提取点号后面的最后一部分，例如 'rb' 或 'ta605'
                 raw_code = old_sym.split('.')[-1].lower()
 
-                # 💥 核心修复：用正则剥离出纯字母 (应对 ta605 这种带数字的合约)
+                # 具体合约可能带月份数字，例如 ta605；中文名映射只使用纯品种代码 ta。
                 match = re.match(r"^([a-z]+)(\d*)$", raw_code)
                 if match:
                     pure_letter = match.group(1)
                 else:
                     pure_letter = raw_code
 
-                # 去字典查中文名 (用纯字母 ta 查，而不是用 ta605 查)
+                # 使用纯品种代码查中文名，例如用 ta 匹配 ta605。
                 chs_name = code_to_name.get(pure_letter, pure_letter.upper())
 
-                # 组合成终极完美形态：螺纹钢(rb)[主连] 或 PTA(ta605)[明细]
+                # 统一展示为 “中文名(代码)[数据类型]”，例如 螺纹钢(rb)[主连]。
                 clean_name = f"{chs_name}({raw_code}){suffix}"
                 rename_dict[old_sym] = clean_name
             else:
@@ -97,5 +97,5 @@ class DataProvider:
         clean_df = self._clean_symbol_names(aligned_wide_df, data_type)
 
 
-        print(f"[DataProvider] 数据矩阵对齐，最终Shape: {clean_df.shape}")
+        print(f"[Data Provider] 数据矩阵对齐完成，shape={clean_df.shape}")
         return clean_df

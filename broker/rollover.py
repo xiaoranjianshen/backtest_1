@@ -70,6 +70,6 @@ class MainContractRollover:
 
             if sym_rolled:
                 rolled_symbols += 1
-                print(f"🔄 [换月] {current_time} | {sym} | 昨收:{old_close_price} → 新开:{roll_open_price}")
+                print(f"[Rollover] {current_time} | {sym} | 昨收:{old_close_price} -> 新开:{roll_open_price}")
 
         return rolled_symbols

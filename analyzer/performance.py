@@ -5,6 +5,7 @@
 """
 import os
 import sys
+import re
 from collections import defaultdict
 
 import numpy as np
@@ -19,6 +20,35 @@ if PROJECT_ROOT not in sys.path:
 from broker.order import Direction, Offset
 
 
+PRICE_FIELD_PRIORITY = ('close', 'last_price', 'settlement', 'open')
+SECTOR_ORDER = [
+    "黑色",
+    "有色",
+    "贵金属",
+    "化工",
+    "能源",
+    "油脂油料",
+    "软商品",
+    "生鲜",
+    "建材",
+    "股指",
+    "国债",
+    "航运",
+    "新能源",
+    "未分类",
+]
+
+
+def _console_text(value) -> str:
+    text = str(value).replace('¥', '￥')
+    encoding = sys.stdout.encoding or 'utf-8'
+    return text.encode(encoding, errors='replace').decode(encoding, errors='replace')
+
+
+def _safe_print(value=""):
+    print(_console_text(value))
+
+
 def _lookup_multiplier(symbol: str) -> float:
     from config import FEE_DICT, pure_product_code
     raw_code = pure_product_code(symbol)
@@ -30,6 +60,83 @@ def _lookup_meta(symbol: str) -> dict:
     from config import FEE_DICT, pure_product_code
     raw_code = pure_product_code(symbol)
     return FEE_DICT.get(raw_code) or FEE_DICT.get(raw_code.upper()) or FEE_DICT.get(raw_code.lower()) or {}
+
+
+def _extract_product_code_from_label(label) -> str:
+    """Extract product code from raw or cleaned symbol labels."""
+    from config import pure_product_code
+
+    label_str = str(label)
+    paren_match = re.search(r'\(([a-zA-Z]+[0-9]*)\)', label_str)
+    raw = paren_match.group(1) if paren_match else label_str
+    return pure_product_code(raw)
+
+
+def _symbol_sector(symbol: str) -> str:
+    from config import SYMBOL_DICT, pure_product_code
+
+    raw_code = pure_product_code(symbol)
+    for code, attrs in SYMBOL_DICT.items():
+        if code.lower() == raw_code.lower():
+            return attrs[3] if len(attrs) > 3 else "未分类"
+    return "未分类"
+
+
+def _symbol_sort_key(symbol: str):
+    from config import SYMBOL_DICT, pure_product_code
+
+    raw_code = pure_product_code(symbol)
+    sector = _symbol_sector(raw_code)
+    sector_rank = SECTOR_ORDER.index(sector) if sector in SECTOR_ORDER else len(SECTOR_ORDER)
+    symbol_rank = {code.lower(): idx for idx, code in enumerate(SYMBOL_DICT)}.get(raw_code.lower(), 9999)
+    return sector_rank, symbol_rank, raw_code.lower()
+
+
+def _interpolate_hex_color(start_hex: str, end_hex: str, ratio: float) -> str:
+    ratio = max(0.0, min(1.0, float(ratio)))
+    start = tuple(int(start_hex[i:i + 2], 16) for i in (1, 3, 5))
+    end = tuple(int(end_hex[i:i + 2], 16) for i in (1, 3, 5))
+    rgb = tuple(round(start[idx] + (end[idx] - start[idx]) * ratio) for idx in range(3))
+    return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _pnl_to_color(pnl: float, max_abs_pnl: float) -> str:
+    if max_abs_pnl <= 0:
+        return "#e5e7eb"
+    intensity = min(1.0, abs(float(pnl)) / max_abs_pnl)
+    if pnl > 0:
+        return _interpolate_hex_color("#bfdbfe", "#1d4ed8", intensity)
+    if pnl < 0:
+        return _interpolate_hex_color("#fecaca", "#dc2626", intensity)
+    return "#e5e7eb"
+
+
+def _price_field_from_column(col) -> str:
+    if isinstance(col, tuple) and len(col) >= 2:
+        return str(col[0]).lower()
+    return 'close'
+
+
+def _symbol_label_from_column(col) -> str:
+    if isinstance(col, tuple) and len(col) >= 2:
+        return str(col[1])
+    return str(col)
+
+
+def _price_field_label(field: str) -> str:
+    labels = {
+        'close': '收盘价',
+        'last_price': '最新价',
+        'settlement': '结算价',
+        'open': '开盘价',
+    }
+    return labels.get(field, field)
+
+
+def _annualize_return(final_value: float, initial_value: float, days: int) -> float:
+    if initial_value <= 0 or final_value <= 0:
+        return -1.0
+    return (final_value / initial_value) ** (365 / max(days, 1)) - 1
 
 
 class StrategyAnalyzer:
@@ -59,6 +166,8 @@ class StrategyAnalyzer:
 
     def _match_trades_fifo(self):
         """FIFO 开平仓配对：按品种独立队列，换月流水不参与配对"""
+        self.matched_trades = []
+        self.unmatched_close_volume = 0
         long_queues = defaultdict(list)
         short_queues = defaultdict(list)
 
@@ -70,13 +179,19 @@ class StrategyAnalyzer:
             is_close = t.offset in [Offset.CLOSE, Offset.CLOSE_TODAY]
 
             if not is_close:
+                queue_item = {
+                    'trade': t,
+                    'remaining_volume': t.volume,
+                    'original_volume': t.volume,
+                }
                 if t.direction == Direction.LONG:
-                    long_queues[sym].append(t)
+                    long_queues[sym].append(queue_item)
                 else:
-                    short_queues[sym].append(t)
+                    short_queues[sym].append(queue_item)
                 continue
 
             remain_vol = t.volume
+            close_original_volume = t.volume
             if t.direction == Direction.SHORT:
                 queue = long_queues[sym]
                 direction_label = 'Long'
@@ -85,8 +200,9 @@ class StrategyAnalyzer:
                 direction_label = 'Short'
 
             while remain_vol > 0 and queue:
-                target = queue[0]
-                match_vol = min(remain_vol, target.volume)
+                queue_item = queue[0]
+                target = queue_item['trade']
+                match_vol = min(remain_vol, queue_item['remaining_volume'])
                 mult = _lookup_multiplier(sym)
 
                 if direction_label == 'Long':
@@ -94,8 +210,8 @@ class StrategyAnalyzer:
                 else:
                     gross_pnl = (target.price - t.price) * match_vol * mult
 
-                open_comm = target.commission * (match_vol / (target.volume + 1e-9))
-                close_comm = t.commission * (match_vol / (t.volume + 1e-9))
+                open_comm = target.commission * (match_vol / (queue_item['original_volume'] + 1e-9))
+                close_comm = t.commission * (match_vol / (close_original_volume + 1e-9))
                 net_pnl = gross_pnl - open_comm - close_comm
 
                 self.matched_trades.append({
@@ -106,9 +222,9 @@ class StrategyAnalyzer:
                     'gross_pnl': gross_pnl, 'net_pnl': net_pnl, 'commission': open_comm + close_comm
                 })
 
-                target.volume -= match_vol
+                queue_item['remaining_volume'] -= match_vol
                 remain_vol -= match_vol
-                if target.volume <= 0:
+                if queue_item['remaining_volume'] <= 0:
                     queue.pop(0)
 
             self.unmatched_close_volume += remain_vol
@@ -131,16 +247,171 @@ class StrategyAnalyzer:
         if self.symbol == 'MULTI' and not self.match_df.empty:
             for sym, df_sym in self.match_df.groupby('symbol'):
                 sym_metrics = self._calc_single_metrics(df_sym, sym, "-", is_total=False)
-                # 💥 之前在这里强行覆盖 "-" 的老代码已被彻底抹除！
                 self.metrics_list.append(sym_metrics)
 
         self.metrics = self.metrics_list[0]
+
+    def _get_last_price_by_symbol(self) -> dict:
+        """Return last available price by product code from the analyzer price matrix."""
+        if hasattr(self, '_last_price_by_symbol_cache'):
+            return self._last_price_by_symbol_cache
+
+        prices = {}
+        if getattr(self, 'price_df', None) is None or self.price_df.empty:
+            self._last_price_by_symbol_cache = prices
+            return prices
+
+        for col in self.price_df.columns:
+            if col == 'datetime':
+                continue
+
+            field = _price_field_from_column(col)
+            if field not in PRICE_FIELD_PRIORITY:
+                continue
+
+            code = _extract_product_code_from_label(_symbol_label_from_column(col))
+            series = pd.to_numeric(self.price_df[col], errors='coerce').dropna()
+            if series.empty:
+                continue
+
+            priority = PRICE_FIELD_PRIORITY.index(field)
+            last_price = float(series.iloc[-1])
+            if code not in prices or priority < prices[code][0]:
+                prices[code] = (priority, last_price)
+
+        self._last_price_by_symbol_cache = {code: item[1] for code, item in prices.items()}
+        return self._last_price_by_symbol_cache
+
+    def _get_open_mtm_pnl_by_symbol(self) -> dict:
+        """Estimate open-position PnL minus remaining open commission by symbol."""
+        if hasattr(self, '_open_mtm_pnl_by_symbol_cache'):
+            return self._open_mtm_pnl_by_symbol_cache
+
+        long_queues = defaultdict(list)
+        short_queues = defaultdict(list)
+
+        for t in sorted(self.trades, key=lambda trade: trade.trade_time):
+            sym = t.symbol.lower()
+            is_close = t.offset in [Offset.CLOSE, Offset.CLOSE_TODAY]
+
+            if not is_close:
+                item = {
+                    'price': float(t.price),
+                    'remaining_volume': int(t.volume),
+                    'original_volume': int(t.volume),
+                    'commission': float(t.commission),
+                }
+                if t.direction == Direction.LONG:
+                    long_queues[sym].append(item)
+                else:
+                    short_queues[sym].append(item)
+                continue
+
+            remain_vol = int(t.volume)
+            queue = long_queues[sym] if t.direction == Direction.SHORT else short_queues[sym]
+            while remain_vol > 0 and queue:
+                item = queue[0]
+                match_vol = min(remain_vol, item['remaining_volume'])
+                item['remaining_volume'] -= match_vol
+                remain_vol -= match_vol
+                if item['remaining_volume'] <= 0:
+                    queue.pop(0)
+
+        last_prices = self._get_last_price_by_symbol()
+        mtm = defaultdict(float)
+
+        for sym, queue in long_queues.items():
+            last_price = last_prices.get(sym)
+            if last_price is None:
+                continue
+            multiplier = _lookup_multiplier(sym)
+            for item in queue:
+                vol = item['remaining_volume']
+                if vol <= 0:
+                    continue
+                open_commission = item['commission'] * (vol / (item['original_volume'] + 1e-9))
+                mtm[sym] += (last_price - item['price']) * vol * multiplier - open_commission
+
+        for sym, queue in short_queues.items():
+            last_price = last_prices.get(sym)
+            if last_price is None:
+                continue
+            multiplier = _lookup_multiplier(sym)
+            for item in queue:
+                vol = item['remaining_volume']
+                if vol <= 0:
+                    continue
+                open_commission = item['commission'] * (vol / (item['original_volume'] + 1e-9))
+                mtm[sym] += (item['price'] - last_price) * vol * multiplier - open_commission
+
+        self._open_mtm_pnl_by_symbol_cache = dict(mtm)
+        return self._open_mtm_pnl_by_symbol_cache
+
+    def _get_commission_events(self, sym_name: str | None = None) -> pd.DataFrame:
+        """
+        Actual charged commissions from broker trades.
+
+        `match_df` only contains FIFO-matched closed trades, so it excludes open
+        position commissions and rollover costs. Anything named "累计手续费" should
+        come from the physical trade ledger instead.
+        """
+        rows = []
+        target_sym = sym_name.lower() if sym_name else None
+        for trade in self.trades:
+            trade_sym = trade.symbol.lower()
+            if target_sym is not None and trade_sym != target_sym:
+                continue
+            rows.append({
+                'datetime': pd.to_datetime(trade.trade_time),
+                'symbol': trade_sym,
+                'commission': float(trade.commission),
+            })
+        if not rows:
+            return pd.DataFrame(columns=['datetime', 'symbol', 'commission'])
+        return pd.DataFrame(rows).sort_values('datetime')
+
+    def _get_turnover_events(self, sym_name: str | None = None) -> pd.DataFrame:
+        """Actual trade notional by fill, including open trades, closes, and rollovers."""
+        rows = []
+        target_sym = sym_name.lower() if sym_name else None
+        for trade in self.trades:
+            trade_sym = trade.symbol.lower()
+            if target_sym is not None and trade_sym != target_sym:
+                continue
+            multiplier = _lookup_multiplier(trade_sym)
+            rows.append({
+                'datetime': pd.to_datetime(trade.trade_time),
+                'symbol': trade_sym,
+                'turnover': abs(float(trade.price) * int(trade.volume) * multiplier),
+            })
+        if not rows:
+            return pd.DataFrame(columns=['datetime', 'symbol', 'turnover'])
+        return pd.DataFrame(rows).sort_values('datetime')
+
+    def _get_symbol_total_pnl(self) -> dict:
+        """Realized FIFO net PnL plus open-position mark-to-market PnL by symbol."""
+        pnl_by_symbol = defaultdict(float)
+        if getattr(self, 'match_df', None) is not None and not self.match_df.empty:
+            for sym, value in self.match_df.groupby('symbol')['net_pnl'].sum().items():
+                pnl_by_symbol[str(sym).lower()] += float(value)
+
+        for sym, value in self._get_open_mtm_pnl_by_symbol().items():
+            pnl_by_symbol[str(sym).lower()] += float(value)
+
+        return dict(pnl_by_symbol)
 
     def _calc_single_metrics(self, df_match, sym_name, strat_name, is_total=False):
         """核心引擎：精准计算每一个维度，无死角"""
         total_trades = len(df_match) if not df_match.empty else 0
         total_net_pnl = df_match['net_pnl'].sum() if total_trades > 0 else 0.0
-        total_commission = df_match['commission'].sum() if total_trades > 0 else 0.0
+        actual_commission_events = self._get_commission_events(None if is_total else sym_name)
+        total_commission = actual_commission_events['commission'].sum() if not actual_commission_events.empty else 0.0
+        turnover_events = self._get_turnover_events(None if is_total else sym_name)
+        if not turnover_events.empty:
+            turnover_events['date'] = turnover_events['datetime'].dt.date
+            daily_turnover = turnover_events.groupby('date')['turnover'].sum()
+        else:
+            daily_turnover = pd.Series(dtype=float)
 
         meta = _lookup_meta(sym_name)
         multiplier = float(meta.get('multiplier', _lookup_multiplier(sym_name)))
@@ -170,12 +441,13 @@ class StrategyAnalyzer:
             equity_curve = eq.set_index('datetime')['equity']
             daily_equity = equity_curve.resample('D').last().ffill().dropna()
 
-            # 💥 核心修复：不使用动态 pct_change，而是计算绝对每日盈亏差值，再除以固定的初始资金
+            # 使用绝对每日盈亏除以初始资金，避免动态权益 pct_change 放大资金出入后的收益率。
             daily_pnl_abs = daily_equity.diff().dropna()
+            daily_pnl = daily_pnl_abs
             daily_returns = daily_pnl_abs / self.initial_capital
 
             final_equity = float(daily_equity.iloc[-1])
-            max_open_value = float((eq['equity'] * 0.15).max()) if 'equity' in eq.columns else 0.0
+            max_open_value = float(eq['position_notional'].max()) if 'position_notional' in eq.columns else 0.0
         else:
             equity_curve = self.initial_capital + daily_pnl.cumsum()
             if equity_curve.empty:
@@ -186,8 +458,16 @@ class StrategyAnalyzer:
                 final_equity = float(equity_curve.iloc[-1])
             max_open_value = 0.0
 
-        cum_net = final_equity - self.initial_capital
-        total_return = cum_net / self.initial_capital
+        realized_cum_net = total_net_pnl
+        realized_total_return = realized_cum_net / self.initial_capital if self.initial_capital > 0 else 0.0
+
+        if is_total:
+            mtm_cum_net = final_equity - self.initial_capital
+        else:
+            open_mtm = self._get_open_mtm_pnl_by_symbol().get(sym_name.lower(), 0.0)
+            mtm_cum_net = realized_cum_net + open_mtm
+        mtm_final_equity = self.initial_capital + mtm_cum_net
+        mtm_total_return = mtm_cum_net / self.initial_capital if self.initial_capital > 0 else 0.0
 
         if not equity_curve.empty:
             peak = equity_curve.cummax()
@@ -207,9 +487,14 @@ class StrategyAnalyzer:
             max_drawdown_rate = 0.0
             days = 1
 
-        annual_return = (total_net_pnl / self.initial_capital) * (365 / days)
+        realized_annual_return = _annualize_return(
+            self.initial_capital + realized_cum_net,
+            self.initial_capital,
+            days
+        )
+        mtm_annual_return = _annualize_return(mtm_final_equity, self.initial_capital, days)
         sharpe_ratio = (daily_returns.mean() / daily_returns.std() * np.sqrt(252)) if len(daily_returns) > 1 and daily_returns.std() > 0 else 0.0
-        calmar_ratio = annual_return / abs(max_drawdown_rate) if max_drawdown_rate < 0 else float('inf')
+        calmar_ratio = mtm_annual_return / abs(max_drawdown_rate) if max_drawdown_rate < 0 else float('inf')
 
         win_days = int((daily_pnl > 0).sum())
         total_days = len(daily_pnl)
@@ -217,9 +502,9 @@ class StrategyAnalyzer:
         daily_pnl_pos = daily_pnl[daily_pnl > 0]
         daily_pnl_neg = daily_pnl[daily_pnl <= 0]
         daily_pnl_ratio = (daily_pnl_pos.mean() / abs(daily_pnl_neg.mean())) if len(daily_pnl_pos) > 0 and len(daily_pnl_neg) > 0 and daily_pnl_neg.mean() != 0 else 0.0
-        avg_daily_volume = abs(daily_pnl).sum() / total_days if total_days > 0 else 0.0
+        avg_daily_turnover = daily_turnover.sum() / total_days if total_days > 0 else 0.0
 
-        # 💥 底层换月拦截
+        # 换月是系统维护仓位，不计入普通交易次数，但手续费需要单独披露。
         single_rollover_cnt = 0
         single_rollover_fee = 0.0
         if not is_total:
@@ -248,13 +533,13 @@ class StrategyAnalyzer:
         else:
             fee_rule = "-"
 
-        # 💥 最终字典：补回丢失的累计盈亏，确保 Pandas 不会产生 NaN！
-
         return {
             "合约": "总计 (MULTI)" if is_total else sym_name.upper(),
-            "总收益": f"{total_return * 100:.2f}%",
-            "年化收益": f"{annual_return * 100:.2f}%",
-            "累计盈亏": f"¥{cum_net:,.0f}",  # 💥 统一使用统一的计算源，彻底解决分品种 NaN 问题
+            "总收益": f"{realized_total_return * 100:.2f}%",
+            "年化收益": f"{realized_annual_return * 100:.2f}%",
+            "总收益(含持仓)": f"{mtm_total_return * 100:.2f}%",
+            "年化收益(含持仓)": f"{mtm_annual_return * 100:.2f}%",
+            "累计盈亏": f"¥{realized_cum_net:,.0f}",  # 已平仓净盈亏
             "均笔利润(跳)": tick_profit,
             "最大开仓市值": f"¥{max_open_value:,.0f}" if is_total else "-",
             "单日最大回撤": f"¥{max_drawdown_trade:,.0f}",
@@ -267,12 +552,12 @@ class StrategyAnalyzer:
             "逐日盈亏比": f"{daily_pnl_ratio:.2f}",
             "交易次数": total_trades,
             "交易日数": total_days,
-            "日均成交额": f"¥{avg_daily_volume:,.0f}",
+            "日均成交额": f"¥{avg_daily_turnover:,.0f}",
             "保证金": margin_rate_text,
             "主力换月次数": rollover_cnt_text,
             "换月手续费": rollover_fee_text,
-            "费率模型": "-" if is_total else fee_rule,  # 💥 费率模型倒数第二列
-            "累计手续费": f"¥{total_commission:,.0f}",  # 💥 累计手续费最后一列
+            "费率模型": "-" if is_total else fee_rule,
+            "累计手续费": f"¥{total_commission:,.0f}",
         }
 
     # =========================================================================
@@ -311,7 +596,7 @@ class StrategyAnalyzer:
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified", xaxis_title="", yaxis_title="权益 (￥)"
         )
-        # 💥 核心：只吐出 div 字符串，不生成整个网页
+        # 只返回图表 div，整页 HTML 由 frontend_index.py 统一组装。
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_cum_pnl_html_div(self):
@@ -323,20 +608,18 @@ class StrategyAnalyzer:
         # 累计盈亏 = 动态权益 - 初始本金
         cum_pnl = [val - self.initial_capital for val in equity_y]
 
-        # 累计交易手续费 (强制转换为 list，避免 Pandas 索引干扰)
-        df_sort = self.match_df.copy()
-        if not df_sort.empty:
-            df_sort['close_time'] = pd.to_datetime(df_sort['close_time'])
-            df_sort = df_sort.sort_values('close_time')
-            comm_x = df_sort['close_time'].tolist()
-            comm_y = df_sort['commission'].cumsum().tolist()
+        # 累计交易手续费使用真实成交流水，包含未平仓开仓手续费和换月手续费。
+        commission_events = self._get_commission_events()
+        if not commission_events.empty:
+            comm_x = commission_events['datetime'].tolist()
+            comm_y = commission_events['commission'].cumsum().tolist()
         else:
             comm_x = equity_x
             comm_y = [0] * len(equity_x)
 
         fig = go.Figure()
 
-        # 💥 累计盈亏 (红线) - 悬浮保留精确数字
+        # 累计盈亏曲线。
         fig.add_trace(go.Scatter(
             x=equity_x, y=cum_pnl,
             mode='lines', name='累计盈亏', line=dict(color='#ef4444', width=2),
@@ -345,7 +628,7 @@ class StrategyAnalyzer:
             hovertemplate="日期: %{x}<br>累计盈亏: ¥%{y:,.0f}<extra></extra>"
         ))
 
-        # 💥 累计手续费 (绿线) - 悬浮保留精确数字
+        # 累计手续费曲线。
         fig.add_trace(go.Scatter(
             x=comm_x, y=comm_y,
             mode='lines', name='累计交易手续费', line=dict(color='#22c55e', width=2),
@@ -361,7 +644,6 @@ class StrategyAnalyzer:
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 
-            # 💥 左侧主 Y 轴：删掉 tickformat，让 Plotly 自动使用 k / M 缩写
             yaxis=dict(
                 title=dict(text="累计盈亏 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
@@ -369,7 +651,6 @@ class StrategyAnalyzer:
                 gridcolor='#f3f4f6'
             ),
 
-            # 💥 右侧副 Y 轴：删掉 tickformat，让 Plotly 自动使用 k / M 缩写
             yaxis2=dict(
                 title=dict(text="累计手续费 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
@@ -405,9 +686,9 @@ class StrategyAnalyzer:
 
         # 对齐时间轴与计算
         if not close_df.empty:
-            # 💥 容错处理：确保每一个品种是从它自己的“上市第一天”作为 1.0 开始归一化，而不是全部按第一行
+            # 每个品种从自己的第一条有效价格归一化，避免未上市品种的 NaN 扭曲基准。
             norm_df = close_df.apply(lambda col: col / col.dropna().iloc[0] if not col.dropna().empty else col)
-            # 等权均值：Pandas的mean会自动忽略NaN，实现动态等权买入持有！
+            # 等权均值会自动忽略 NaN，用于模拟动态等权买入持有基准。
             benchmark_nv = norm_df.mean(axis=1)
 
             # 对齐到动态权益的时间轴
@@ -421,7 +702,7 @@ class StrategyAnalyzer:
 
         fig = go.Figure()
 
-        # 💥 策略净值 (蓝色面图)
+        # 策略净值。
         fig.add_trace(go.Scatter(
             x=equity_x, y=strategy_nv,
             mode='lines', name='策略净值', line=dict(color='#3b82f6', width=2),
@@ -429,7 +710,7 @@ class StrategyAnalyzer:
             hovertemplate="日期: %{x}<br>策略净值: %{y:.4f}<extra></extra>"
         ))
 
-        # 💥 基准净值 (橘色虚线)
+        # 等权买入持有基准净值。
         fig.add_trace(go.Scatter(
             x=equity_x, y=bench_y,
             mode='lines', name='等权买入持有基准', line=dict(color='#f59e0b', width=2, dash='dash'),
@@ -462,7 +743,7 @@ class StrategyAnalyzer:
 
         # 1. 计算滚动最高点及回撤比例
         peak = df_eq['equity'].cummax()
-        # 💥 强制转化为纯 list，彻底剥离 0-1500 的行号索引，防止 Plotly 误读！
+        # 转为普通 list，避免 Plotly 把 pandas 索引误读为坐标。
         drawdown_y = ((df_eq['equity'] - peak) / peak).tolist()
         drawdown_x = df_eq['datetime'].tolist()
 
@@ -634,7 +915,7 @@ class StrategyAnalyzer:
         # 1. 按品种聚合盈亏并严格降序排列
         asset_stats = self.match_df.groupby('symbol')['net_pnl'].sum().sort_values(ascending=False)
 
-        # 💥 强制转换为纯 Python 列表，彻底杜绝 Plotly 坐标轴错乱 Bug
+        # 转为普通 Python 列表，避免 Plotly 误读 pandas 索引。
         symbols = [str(sym).upper() for sym in asset_stats.index]
         pnls = [float(val) for val in asset_stats.values]
 
@@ -643,12 +924,12 @@ class StrategyAnalyzer:
 
         fig = go.Figure()
 
-        # 💥 显式指定 x 和 y，确保是标准的垂直直方图
+        # 显式指定 x 和 y，确保输出为标准垂直柱状图。
         fig.add_trace(go.Bar(
             x=symbols,
             y=pnls,
             marker_color=colors,
-            text=[f"{val / 10000:.0f}万" for val in pnls],  # 柱子上直接显示万为单位的金额，一目了然
+            text=[f"{val / 10000:.0f}万" for val in pnls],
             textposition='auto',
             hovertemplate="合约: %{x}<br>累计净盈亏: ¥%{y:,.0f}<extra></extra>"
         ))
@@ -657,7 +938,7 @@ class StrategyAnalyzer:
             height=350, margin=dict(l=10, r=10, t=20, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
-            showlegend=False,  # 💥 禁用多余的图例
+            showlegend=False,
             yaxis=dict(
                 title=dict(text="累计净盈亏 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
@@ -705,75 +986,224 @@ class StrategyAnalyzer:
         fig.update_layout(
             height=300, margin=dict(l=10, r=10, t=10, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            showlegend=False  # 💥 彻底干掉多余的 UI 按钮
+            showlegend=False
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_turnover_pie_html_div(self):
-        """生成独立的品种成交额占比饼图"""
-        if getattr(self, 'match_df', None) is None or self.match_df.empty:
+        """Generate trade-notional allocation from actual fills; color encodes symbol PnL."""
+        turnover_events = self._get_turnover_events()
+        if turnover_events.empty:
             return "<div class='text-center text-gray-500 py-10'>无交易明细</div>"
 
-        df_match = self.match_df.copy()
-        df_match['turnover'] = df_match.apply(
-            lambda r: r['volume'] * r['open_price'] * _lookup_multiplier(r['symbol']), axis=1
-        )
-        turnover_stats = df_match.groupby('symbol')['turnover'].sum()
+        turnover_stats = turnover_events.groupby('symbol')['turnover'].sum().sort_values(ascending=False)
+        pnl_by_symbol = self._get_symbol_total_pnl()
+
+        if len(turnover_stats) >= 10:
+            total_turnover = float(turnover_stats.sum())
+            df_turnover = turnover_stats.rename("turnover").reset_index()
+            df_turnover["sector"] = df_turnover["symbol"].apply(_symbol_sector)
+            df_turnover["pct"] = df_turnover["turnover"] / total_turnover * 100 if total_turnover > 0 else 0.0
+            df_turnover["net_pnl"] = df_turnover["symbol"].map(lambda sym: pnl_by_symbol.get(str(sym).lower(), 0.0))
+            df_turnover = df_turnover.sort_values(
+                by="symbol",
+                key=lambda series: series.map(_symbol_sort_key),
+            )
+
+            sector_stats = df_turnover.groupby("sector", sort=False).agg(
+                turnover=("turnover", "sum"),
+                net_pnl=("net_pnl", "sum"),
+            )
+            max_abs_pnl = max(
+                [abs(float(value)) for value in df_turnover["net_pnl"].tolist()]
+                + [abs(float(value)) for value in sector_stats["net_pnl"].tolist()]
+                + [1.0]
+            )
+            labels = []
+            parents = []
+            ids = []
+            values = []
+            colors = []
+            customdata = []
+            text = []
+
+            for sector, row in sector_stats.iterrows():
+                turnover = float(row["turnover"])
+                net_pnl = float(row["net_pnl"])
+                sector_pct = float(turnover / total_turnover * 100) if total_turnover > 0 else 0.0
+                labels.append(sector)
+                parents.append("")
+                ids.append(f"sector:{sector}")
+                values.append(turnover)
+                colors.append(_pnl_to_color(net_pnl, max_abs_pnl))
+                customdata.append([sector, turnover, sector_pct, net_pnl])
+                text.append(f"{sector_pct:.1f}%")
+
+            for row in df_turnover.itertuples(index=False):
+                symbol_label = str(row.symbol).upper()
+                labels.append(symbol_label)
+                parents.append(f"sector:{row.sector}")
+                ids.append(f"symbol:{symbol_label}")
+                values.append(float(row.turnover))
+                colors.append(_pnl_to_color(float(row.net_pnl), max_abs_pnl))
+                customdata.append([row.sector, float(row.turnover), float(row.pct), float(row.net_pnl)])
+                text.append(f"{row.pct:.2f}%")
+
+            fig = go.Figure(data=[go.Treemap(
+                labels=labels,
+                parents=parents,
+                ids=ids,
+                values=values,
+                branchvalues="total",
+                text=text,
+                textinfo="label+text",
+                customdata=customdata,
+                marker=dict(
+                    colors=colors,
+                    line=dict(width=1.5, color="#ffffff"),
+                ),
+                hovertemplate=(
+                    "合约/板块: %{label}<br>"
+                    "所属板块: %{customdata[0]}<br>"
+                    "交易市值: ¥%{customdata[1]:,.0f}<br>"
+                    "市值占比: %{customdata[2]:.2f}%<br>"
+                    "净收益: ¥%{customdata[3]:,.0f}<extra></extra>"
+                ),
+            )])
+
+            fig.update_layout(
+                height=340, margin=dict(l=4, r=4, t=4, b=4),
+                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
+            )
+            return fig.to_html(full_html=False, include_plotlyjs=False)
+
+        total_turnover = float(turnover_stats.sum())
+        df_turnover = turnover_stats.rename("turnover").reset_index()
+        df_turnover["pct"] = df_turnover["turnover"] / total_turnover * 100 if total_turnover > 0 else 0.0
+        df_turnover["net_pnl"] = df_turnover["symbol"].map(lambda sym: pnl_by_symbol.get(str(sym).lower(), 0.0))
+        max_abs_pnl = max([abs(float(value)) for value in df_turnover["net_pnl"].tolist()] + [1.0])
 
         fig = go.Figure(data=[go.Pie(
-            labels=[sym.upper() for sym in turnover_stats.index],
-            values=turnover_stats.values.tolist(),
+            labels=[str(sym).upper() for sym in df_turnover["symbol"]],
+            values=df_turnover["turnover"].tolist(),
             textinfo='label+percent',
-            hole=0.4
+            hole=0.4,
+            customdata=df_turnover[["turnover", "pct", "net_pnl"]].values.tolist(),
+            marker=dict(colors=[_pnl_to_color(float(pnl), max_abs_pnl) for pnl in df_turnover["net_pnl"]]),
+            hovertemplate=(
+                "合约: %{label}<br>"
+                "交易市值: ¥%{customdata[0]:,.0f}<br>"
+                "市值占比: %{customdata[1]:.2f}%<br>"
+                "净收益: ¥%{customdata[2]:,.0f}<extra></extra>"
+            ),
         )])
 
         fig.update_layout(
             height=300, margin=dict(l=10, r=10, t=10, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            showlegend=False  # 💥 彻底干掉多余的 UI 按钮
+            showlegend=False
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_multi_asset_pnl_curves_html_div(self):
-        """生成多品种盈亏曲线簇 (#12) - 独立时序累加"""
+        """生成按板块排序并可筛选的多品种累计盈亏曲线。"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty or self.symbol != 'MULTI':
             return "<div class='text-center text-gray-500 py-10'>无多品种交易流水</div>"
 
         df = self.match_df.copy()
-        # 将平仓时间强制转换为标准化日期
         df['close_time'] = pd.to_datetime(df['close_time'])
+        df['sector'] = df['symbol'].apply(_symbol_sector)
 
         fig = go.Figure()
 
-        # 提取资金曲线的时间轴作为公共坐标系基准，并标准化去重
         equity_x, _ = self._get_equity_series()
         base_idx = pd.to_datetime(equity_x).normalize().drop_duplicates() if equity_x else None
 
+        grouped = []
         for sym, grp in df.groupby('symbol'):
-            # 严格按天聚合
+            grouped.append((sym, _symbol_sector(sym), grp))
+        grouped.sort(key=lambda item: _symbol_sort_key(item[0]))
+
+        trace_sectors = []
+        for sym, sector, grp in grouped:
             daily_pnl = grp.groupby(grp['close_time'].dt.normalize())['net_pnl'].sum()
 
             if base_idx is not None and not base_idx.empty:
                 daily_pnl = daily_pnl.reindex(base_idx).fillna(0)
 
             cum_pnl = daily_pnl.cumsum()
-
-            # 💥 强制转化为纯 List，彻底杜绝 Plotly 画行号的 Bug
             x_vals = cum_pnl.index.strftime('%Y-%m-%d').tolist()
             y_vals = cum_pnl.tolist()
+            sym_label = str(sym).upper()
+            trace_sectors.append(sector)
 
             fig.add_trace(go.Scatter(
                 x=x_vals, y=y_vals,
-                mode='lines', name=sym.upper(),
+                mode='lines', name=sym_label,
                 line=dict(width=1.5),
-                hovertemplate=f"合约: {sym.upper()}<br>日期: %{{x}}<br>累计盈亏: ¥%{{y:,.0f}}<extra></extra>"
+                legendgroup=sector,
+                legendgrouptitle_text=sector,
+                customdata=[sector] * len(x_vals),
+                hovertemplate=(
+                    f"合约: {sym_label}<br>"
+                    "板块: %{customdata}<br>"
+                    "日期: %{x}<br>"
+                    "累计盈亏: ¥%{y:,.0f}<extra></extra>"
+                )
+            ))
+
+        sectors = []
+        for sector in trace_sectors:
+            if sector not in sectors:
+                sectors.append(sector)
+
+        buttons = [
+            dict(
+                label="全部板块",
+                method="update",
+                args=[
+                    {"visible": [True] * len(trace_sectors)},
+                    {"title": None},
+                ],
+            )
+        ]
+        for sector in sectors:
+            visible = [item == sector for item in trace_sectors]
+            buttons.append(dict(
+                label=sector,
+                method="update",
+                args=[
+                    {"visible": visible},
+                    {"title": None},
+                ],
             ))
 
         fig.update_layout(
-            height=400, margin=dict(l=10, r=10, t=10, b=10),
+            height=430, margin=dict(l=10, r=10, t=56, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            updatemenus=[dict(
+                type="dropdown",
+                direction="down",
+                active=0,
+                x=0,
+                y=1.17,
+                xanchor="left",
+                yanchor="top",
+                buttons=buttons,
+                bgcolor="#ffffff",
+                bordercolor="#d1d5db",
+                font=dict(color="#111827", size=12),
+            )],
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+                traceorder="grouped",
+                font=dict(size=10),
+            ),
             yaxis=dict(
                 title=dict(text="单品种累计盈亏 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"), showgrid=True, gridcolor='#f3f4f6'
@@ -850,7 +1280,7 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_period_returns_html_div(self):
-        """生成多周期收益日历条形图 (#7) - 带 UI 切换按钮，已修复重叠与周线空白 Bug"""
+        """生成多周期收益条形图 (#7)，支持周、月、年切换。"""
         if getattr(self, 'equity_df', None) is None or self.equity_df.empty:
             return "<div class='text-center text-gray-500 py-10'>无资金数据</div>"
 
@@ -871,7 +1301,7 @@ class StrategyAnalyzer:
                 prev_eq = eq
             return labels, returns, colors
 
-        # 💥 修复周线空白Bug: 将格式改为标准的 %Y-%m-%d，确保 Plotly 能正确渲染 X 轴
+        # 周收益使用标准日期字符串，避免 Plotly 把周标签当作不可解析类别。
         w_labels, w_rets, w_colors = _calc_returns('W-FRI', '%Y-%m-%d')
         m_labels, m_rets, m_colors = _calc_returns('ME', '%Y-%m')
         y_labels, y_rets, y_colors = _calc_returns('YE', '%Y')
@@ -884,15 +1314,15 @@ class StrategyAnalyzer:
         fig.add_trace(go.Bar(x=y_labels, y=y_rets, marker_color=y_colors, visible=False, name='年收益',
                              hovertemplate="年份: %{x}<br>收益率: %{y:.2%}<extra></extra>"))
 
-        # 💥 将 UI 按钮强行移至左上角，彻底避开右上角的 Modebar 遮挡！
+        # 周/月/年切换按钮放在图表左上角，避开右上角 modebar。
         fig.update_layout(
             updatemenus=[dict(
-                type="buttons", direction="right", active=1,  # 💥 修复：Plotly 横向排列必须写 "right"
+                type="buttons", direction="right", active=1,
                 x=0.0, y=1.15, xanchor="left", yanchor="top",  # 坐标定在左上
                 buttons=list([
-                    dict(label="周线", method="update", args=[{"visible": [True, False, False]}]),
-                    dict(label="月线", method="update", args=[{"visible": [False, True, False]}]),
-                    dict(label="年线", method="update", args=[{"visible": [False, False, True]}])
+                    dict(label="周收益 (Weekly)", method="update", args=[{"visible": [True, False, False]}]),
+                    dict(label="月收益 (Monthly)", method="update", args=[{"visible": [False, True, False]}]),
+                    dict(label="年收益 (Yearly)", method="update", args=[{"visible": [False, False, True]}])
                 ]),
                 pad={"r": 10, "t": 10}, showactive=True, bgcolor="#f3f4f6", bordercolor="#d1d5db"
             )],
@@ -913,40 +1343,50 @@ class StrategyAnalyzer:
         # 提取所有交易过的品种，去重并排序
         traded_symbols = sorted(list(set([t.symbol.lower() for t in self.trades])))
 
-        # 💥 彻底剥离 Pandas 索引，强制转换为 Python 标准日期列表
+        # 日期转为普通列表，避免 Plotly 把 pandas 索引当作价格序列。
         if 'datetime' in self.price_df.columns:
             dates = pd.to_datetime(self.price_df['datetime']).tolist()
         else:
             dates = pd.to_datetime(self.price_df.index).tolist()
 
         for sym in traded_symbols:
-            # 模糊匹配找到价格宽表里对应的列
-            sym_col = None
-            import re
+            # 精确找到当前品种的价格列，只允许 close / last_price 等价格字段。
+            # 不能在整个宽表里模糊匹配，否则容易把 volume/open_interest 当成价格线。
+            candidates = []
             for col in self.price_df.columns:
-                if col == 'datetime': continue
-                col_str = str(col[1]).lower() if isinstance(col, tuple) else str(col).lower()
-                # 尝试精确匹配品种后缀，避免 'y' 匹配到其他字符
-                match = re.search(r'\.([a-z]+)$', col_str)
-                code = match.group(1) if match else col_str
-                if sym == code or sym in col_str:
-                    sym_col = col
-                    break
+                if col == 'datetime':
+                    continue
+
+                field = _price_field_from_column(col)
+                if field not in PRICE_FIELD_PRIORITY:
+                    continue
+
+                code = _extract_product_code_from_label(_symbol_label_from_column(col))
+                if code == sym:
+                    candidates.append((PRICE_FIELD_PRIORITY.index(field), col, field))
+
+            if candidates:
+                _, sym_col, price_field = sorted(candidates, key=lambda item: item[0])[0]
+            else:
+                sym_col = None
+                price_field = 'close'
 
             if sym_col is None:
                 continue
 
-            # 💥 最核心修复：将价格列强制转为 float，剔除 pd.NA 造成的 Object 类别干扰，防止 Plotly 画成行号序列！
+            # 价格列强制转为 float，避免 pd.NA 让 Plotly 误判为类别或行号序列。
             prices = pd.to_numeric(self.price_df[sym_col], errors='coerce').tolist()
+            price_label = _price_field_label(price_field)
+            sym_label = sym.upper()
 
             fig = go.Figure()
 
-            # 1. 绘制底层价格主线 (沉稳的灰色极简风)
+            # 1. 绘制底层价格主线。
             fig.add_trace(go.Scatter(
-                x=dates, y=prices, mode='lines', name='收盘价',
+                x=dates, y=prices, mode='lines', name=f'{sym_label} {price_label}',
                 line=dict(color='#9ca3af', width=1.5),
                 connectgaps=True,  # 忽略缺失值断点
-                hovertemplate="时间: %{x}<br>收盘价: ¥%{y:,.0f}<extra></extra>"
+                hovertemplate=f"品种: {sym_label}<br>时间: %{{x}}<br>{price_label}: ¥%{{y:,.0f}}<extra></extra>"
             ))
 
             # 2. 提取当前品种的开平仓坐标
@@ -962,7 +1402,7 @@ class StrategyAnalyzer:
 
                 txt = f"手数: {t.volume}<br>成交价: ¥{t.price:,.0f}"
 
-                # 💥 核心修复：Direction 代表订单买卖方向！
+                # Direction 表示订单买卖方向，Offset 表示开仓/平仓语义。
 
                 # 1. 买入开仓 (Buy Open) = 开多
                 if t.direction == Direction.LONG and t.offset == Offset.OPEN:
@@ -1018,10 +1458,16 @@ class StrategyAnalyzer:
                                          hovertemplate="<b>【平空】</b><br>时间: %{x}<br>%{text}<extra></extra>"))
 
             fig.update_layout(
-                height=500, margin=dict(l=10, r=10, t=10, b=10),
+                title=dict(
+                    text=f"{sym_label} 交易复盘 | 价格线: {price_label}",
+                    x=0.01,
+                    xanchor='left',
+                    font=dict(size=16, color='#1f2937')
+                ),
+                height=520, margin=dict(l=10, r=10, t=50, b=10),
                 paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-                yaxis=dict(title=dict(text="标的价格", font=dict(color="#1f2937")), tickfont=dict(color="#1f2937"),
+                yaxis=dict(title=dict(text=f"{sym_label} {price_label}", font=dict(color="#1f2937")), tickfont=dict(color="#1f2937"),
                            showgrid=True, gridcolor='#f3f4f6'),
                 xaxis=dict(showgrid=False, tickfont=dict(color="#1f2937"))
             )
@@ -1041,11 +1487,11 @@ class StrategyAnalyzer:
         df_eq = df_eq.sort_values('datetime')
         df_eq['date'] = df_eq['datetime'].dt.date
 
-        # 提取每日发生的手续费序列
-        if hasattr(self, 'match_df') and not self.match_df.empty:
-            df_match = self.match_df.copy()
-            df_match['date'] = pd.to_datetime(df_match['close_time']).dt.date
-            daily_comm = df_match.groupby('date')['commission'].sum()
+        # 手续费来自真实成交流水，不能只看已配对平仓流水。
+        commission_events = self._get_commission_events()
+        if not commission_events.empty:
+            commission_events['date'] = commission_events['datetime'].dt.date
+            daily_comm = commission_events.groupby('date')['commission'].sum()
         else:
             daily_comm = pd.Series(dtype=float)
 
@@ -1069,11 +1515,10 @@ class StrategyAnalyzer:
             return "<div class='text-center text-gray-500 py-10'>无绩效计算结果</div>"
 
         df = pd.DataFrame(self.metrics_list)
-        # 💥 将字号统一缩减为 text-[11px]（紧凑抗锯齿体），紧凑排布 tracking-tighter
+        # 绩效表列数较多，使用紧凑字号和单元格间距保证首屏可读性。
         html = df.to_html(index=False, border=0,
                           classes="w-full text-[11px] text-center text-gray-700 bg-white antialiased tracking-tighter")
 
-        # 💥 极致压缩单元格边距（py-1.5 px-0.5），使 22 列不需要任何滑轮滚动就能在横向完全平铺
         html = html.replace('<thead>', '<thead class="bg-[#2c3e50] text-white text-[11px] sticky top-0">') \
             .replace('<th>', '<th class="py-2 px-0.5 font-bold border-r border-[#34495e] whitespace-nowrap">') \
             .replace('<td>',
@@ -1087,7 +1532,7 @@ class StrategyAnalyzer:
         df = pd.DataFrame([self.describe_params])
         html = df.to_html(index=False, border=0,
                           classes="w-full text-sm text-center text-gray-600 bg-white shadow-sm rounded-lg overflow-hidden")
-        # 💥 精准微调：替换增加 text-center，并用空字符串抹除 style="text-align: right;"
+        # 移除 pandas 默认右对齐样式，保持参数表统一居中。
         html = html.replace('<thead>', '<thead class="bg-gray-100 text-gray-700 font-semibold border-b">') \
             .replace('<th>', '<th class="py-3 px-4 text-center">') \
             .replace('<td>', '<td class="py-3 px-4 text-center border-b border-gray-50">') \
@@ -1095,29 +1540,28 @@ class StrategyAnalyzer:
         return html
 
     # =========================================================================
-    # 报告入口改造
+    # 报告生成入口
     # =========================================================================
 
     def generate_report(self):
-        print("\n" + "=" * 50)
-        print("生成报告")
+        _safe_print("\n" + "=" * 50)
+        _safe_print("[Analyzer] 正在生成绩效报告...")
         self._match_trades_fifo()
         self._calculate_metrics()
 
         if not self.metrics:
-            print("⚠️ 警告：回测期间无完整开平仓记录，无法生成分析报告。")
+            _safe_print("[Analyzer Warning] 回测期间无完整开平仓记录，无法生成分析报告。")
             return
 
         report_path = os.path.join(self.output_dir, '0_performance_report.txt')
         with open(report_path, 'w', encoding='utf-8') as f:
             header = f"=== {self.strategy_name} on {self.symbol} ({self.freq}) 绩效报告 ===\n"
-            print(header)
+            _safe_print(header)
             f.write(header)
             for k, v in self.metrics.items():
                 line = f"{k}: {v}\n"
-                print(f"  {k}: {v}")
+                _safe_print(f"  {k}: {v}")
                 f.write(line)
 
-        print("=" * 50)
-        print("✅ [后端就绪] 指标计算完毕。纯净数据已备好，准备进入前端渲染流程！")
-        # 💥 绝对不要再调用 self._plot_equity_series()，我们不再画死板的图片了！
+        _safe_print("=" * 50)
+        _safe_print("[Analyzer] 指标计算完成，正在准备前端报告数据。")

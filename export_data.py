@@ -10,7 +10,7 @@ import sys
 import pandas as pd
 from datetime import datetime
 
-# 💥 强制将当前脚本所在的目录加入 Python 寻路列表，确保能顺利导入同级模块
+# 将当前脚本所在目录加入 Python 搜索路径，确保可以导入项目模块。
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.append(current_dir)
@@ -19,25 +19,25 @@ from data_feed.data_provider import DataProvider
 from config import SYMBOL_DICT
 
 # =========================================================================
-# ⚙️ 核心参数配置区 (使用者在此修改参数)
+# 核心参数配置区
 # =========================================================================
 
-# 1. 📂 目标导出文件夹路径
+# 1. 目标导出文件夹路径
 EXPORT_DIR = os.path.join(current_dir, "exports")
 
-# 2. 📊 选择导出频率 (freq) —— 【只能从以下选项中选一个，取消对应的注释即可】
-FREQ = 'tick'
+# 2. 选择导出频率 (freq)
+FREQ = '1m'
 # FREQ = '5m'
 # FREQ = '1d'
 # FREQ = 'tick'
 
-# 3. 🎯 选择数据形态 (data_type) —— 当前默认导出全市场明细合约底表
+# 3. 选择数据形态 (data_type)
 DATA_TYPE = 'all'
 # DATA_TYPE = 'main_adj'  # 主力连续【等比复权表】(含 month_change)
 # DATA_TYPE = 'main'      # 主力连续【未复权真实价格表】
 # DATA_TYPE = 'index'     # 指数连续曲线表
 
-# 4. ⚔️ 选择要导出的品种组合 —— 当前默认导出全市场全品种
+# 4. 选择要导出的品种组合
 # 可选: 'all' / 'custom' / 'sector'
 SYMBOL_SELECTION_MODE = 'all'
 
@@ -47,7 +47,7 @@ SYMBOL_SELECTION_MODE = 'all'
 # 模式 C：按照板块筛选导出（需要时再打开 sector）
 #TARGET_SECTOR = '黑色'
 
-# 💥 核心修复：在内存中构建一个“全小写键”的影子字典，彻底免疫大小写问题
+# 构建小写品种映射，兼容用户输入大小写差异。
 LOWER_SYMBOL_DICT = {k.lower(): v for k, v in SYMBOL_DICT.items()}
 
 SELECTED_SYMBOLS = []
@@ -75,7 +75,7 @@ elif SYMBOL_SELECTION_MODE == 'custom':
                 exchange = LOWER_SYMBOL_DICT[pure_code][2]
                 SELECTED_SYMBOLS.append(f"{exchange}.{raw_input}")
             else:
-                print(f"⚠️ 警告: 找不到 '{pure_code}' 的交易所映射，已跳过 {sym}。")
+                print(f"[Data Export Warning] 找不到 '{pure_code}' 的交易所映射，已跳过 {sym}。")
 
         else:
             if raw_input in LOWER_SYMBOL_DICT:
@@ -90,7 +90,7 @@ elif SYMBOL_SELECTION_MODE == 'custom':
 
                 SELECTED_SYMBOLS.append(f"{prefix}{exchange}.{raw_input}")
             else:
-                print(f"⚠️ 警告: 品种 '{sym}' 未在 config.py 中配置，已跳过！")
+                print(f"[Data Export Warning] 品种 '{sym}' 未在 config.py 中配置，已跳过。")
 elif SYMBOL_SELECTION_MODE == 'sector':
     target_sector = globals().get('TARGET_SECTOR')
     if not target_sector:
@@ -109,7 +109,7 @@ elif SYMBOL_SELECTION_MODE == 'sector':
 else:
     raise ValueError("SYMBOL_SELECTION_MODE 只能是 'all'、'custom' 或 'sector'")
 
-# 5. ⏱️ 选择导出的时间范围 (支持精确到时分秒)
+# 5. 选择导出的时间范围
 START_DATE = '2026-05-15 09:00:00'
 END_DATE = '2026-05-15 23:59:59'
 
@@ -136,7 +136,17 @@ def _resolve_available_output_path(path: str) -> str:
     return candidate
 
 
-# 6. 🎛️ 自定义筛选列 —— 【不需要的列直接加 # 注释掉即可】
+def _ensure_datetime_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure exported wide data keeps the datetime index as a normal column."""
+    if 'datetime' in df.columns:
+        return df
+
+    result = df.copy()
+    result.insert(0, 'datetime', result.index)
+    return result
+
+
+# 6. 自定义筛选列
 # all 模式下会尽量按原始窄表字段输出；连续/指数模式仍按宽表字段过滤
 EXPORT_FIELDS = [
     # --- K线专属 ---
@@ -164,7 +174,7 @@ TICK_RAW_EXPORT_FIELDS = [
     'symbol', 'datetime', 'last_price', 'volume', 'bid_price_1', 'bid_volume_1', 'ask_price_1', 'ask_volume_1', 'oi'
 ]
 
-# 7. 📥 导出格式选择
+# 7. 导出格式选择
 SAVE_FORMAT = 'csv'  # 'csv' 或 'parquet' (Parquet 体积更小，读取速度快10倍)
 
 # 8. 是否把双层 MultiIndex 表头拍平？
@@ -174,11 +184,11 @@ FLATTEN_COLUMNS = True
 
 
 ## =========================================================================
-# 🛠️ 自动化导出核心逻辑执行区
+# 自动化导出执行区
 # =========================================================================
 def execute_export():
     import re
-    print("⏳ 正在初始化数据分发...")
+    print("[Data Export] 正在初始化数据分发...")
     provider = DataProvider()
 
     # all 明细底表：直接导出原始长表，不做宽表对齐
@@ -200,27 +210,27 @@ def execute_export():
         )
 
         if df.empty:
-            print("❌ 导出失败：没有获取到任何有效数据，请检查 ClickHouse 状态或合约配置。")
+            print("[Data Export Error] 未获取到有效数据，请检查 ClickHouse 状态或合约配置。")
             return
 
         if needs_post_filter and 'symbol' in df.columns:
             requested_codes = {_extract_product_code(sym) for sym in raw_symbols}
             before_rows = len(df)
             df = df[df['symbol'].astype(str).map(_extract_product_code).isin(requested_codes)].copy()
-            print(f"🧪 [PostFilter] all 明细表已按品种前缀过滤: {sorted(requested_codes)}")
-            print(f"🧪 [PostFilter] 行数变化: {before_rows:,} -> {len(df):,}")
+            print(f"[Post Filter] all 明细表已按品种前缀过滤: {sorted(requested_codes)}")
+            print(f"[Post Filter] 行数变化: {before_rows:,} -> {len(df):,}")
 
         if df.empty:
-            print("❌ 导出失败：本地按品种前缀过滤后没有命中任何合约，请检查板块配置或底表symbol格式。")
+            print("[Data Export Error] 本地按品种前缀过滤后没有命中任何合约，请检查板块配置或底表 symbol 格式。")
             return
 
-        print("✂️ 正在按最简原始字段输出 all 明细底表...")
+        print("[Data Export] 正在按原始字段输出 all 明细底表...")
         raw_export_fields = TICK_RAW_EXPORT_FIELDS if FREQ == 'tick' else ALL_RAW_EXPORT_FIELDS
         available_fields = [col for col in raw_export_fields if col in df.columns]
         df = df[available_fields].copy()
 
         actual_full_syms = sorted(df['symbol'].astype(str).str.lower().unique().tolist()) if 'symbol' in df.columns else []
-        print(f"\n✅ [导出结果] all 明细模式导出完成，实际拉取到 {len(actual_full_syms)} 个有效合约。")
+        print(f"\n[Data Export] all 明细模式导出完成，实际拉取到 {len(actual_full_syms)} 个有效合约。")
     else:
         # 1. 调用底座拉取并自动对齐数据
         df = provider.get_history(
@@ -232,7 +242,7 @@ def execute_export():
         )
 
         if df.empty:
-            print("❌ 导出失败：没有获取到任何有效数据，请检查 ClickHouse 状态或合约配置。")
+            print("[Data Export Error] 未获取到有效数据，请检查 ClickHouse 状态或合约配置。")
             return
 
         # =====================================================================
@@ -259,15 +269,15 @@ def execute_export():
         # 对比丢失的品种
         missed_codes = set(requested_pure_codes) - set(actual_pure_codes)
         if skip_requested_compare:
-            print(f"\n✅ [对齐结果] 全市场 all 模式导出完成，实际拉取到 {len(actual_pure_codes)} 个有效合约/代码。")
+            print(f"\n[Data Export] 全市场 all 模式导出完成，实际拉取到 {len(actual_pure_codes)} 个有效合约/代码。")
         elif missed_codes:
-            print(f"\n⚠️ [对齐结果] 预期请求 {len(requested_pure_codes)} 个品种，实际有效 {len(actual_pure_codes)} 个。")
-            print(f"⚠️ [丢失品种] {', '.join(missed_codes)} (提示: 可能是因为在 '{DATA_TYPE}' 表中不存在该合约)")
+            print(f"\n[Data Export Warning] 预期请求 {len(requested_pure_codes)} 个品种，实际有效 {len(actual_pure_codes)} 个。")
+            print(f"[Data Export Warning] 缺失品种: {', '.join(missed_codes)}。可能原因：'{DATA_TYPE}' 表中不存在对应合约。")
         else:
-            print(f"\n✅ [对齐结果] 所有 {len(actual_pure_codes)} 个请求品种均已成功拉取！")
+            print(f"\n[Data Export] 所有 {len(actual_pure_codes)} 个请求品种均已成功拉取。")
 
         # 2. 执行【可选列】精准过滤
-        print("✂️ 正在根据配置筛选目标字段...")
+        print("[Data Export] 正在根据配置筛选目标字段...")
         available_fields = [f for f in EXPORT_FIELDS if f in df.columns.levels[0]]
         df = df.loc[:, df.columns.get_level_values(0).isin(available_fields)]
 
@@ -276,10 +286,12 @@ def execute_export():
             new_columns = [f"{col[1]}_{col[0]}" for col in df.columns]
             df.columns = new_columns
 
+        df = _ensure_datetime_column(df)
+
     # 4. 自动创建目标下载文件夹
     if not os.path.exists(EXPORT_DIR):
         os.makedirs(EXPORT_DIR, exist_ok=True)
-        print(f"📁 目标下载目录不存在，已自动创建: {EXPORT_DIR}")
+        print(f"[Data Export] 目标下载目录不存在，已自动创建: {EXPORT_DIR}")
 
     # 5. 智能构建文件名
     if DATA_TYPE == 'all':
@@ -289,7 +301,7 @@ def execute_export():
     else:
         symbol_desc = f"{len(actual_pure_codes)}symbol_multi"
 
-    # 💥 关键保留：必须加上 'tick': 'tick'，否则高频导出时文件名会出错
+    # tick 频率需要单独映射，避免高频导出文件名为空或不一致。
     freq_map = {'1m': 'min', '5m': '5min', '1d': 'day', 'tick': 'tick'}
     freq_desc = freq_map.get(FREQ.lower(), FREQ.lower())
 
@@ -309,18 +321,18 @@ def execute_export():
     resolved_save_path = _resolve_available_output_path(full_save_path)
 
     # 6. 安全落盘
-    print(f"💾 正在将 {len(df):,} 行数据打包写入磁盘...")
+    print(f"[Data Export] 正在将 {len(df):,} 行数据写入磁盘...")
     if resolved_save_path != full_save_path:
-        print(f"🔓 [文件占用保护] 检测到目标文件正在被占用，已自动改存为: {resolved_save_path}")
+        print(f"[Data Export] 检测到目标文件正在被占用，已改存为: {resolved_save_path}")
     if SAVE_FORMAT.lower() == 'csv':
         df.to_csv(resolved_save_path, index=False, encoding='utf-8-sig')
     elif SAVE_FORMAT.lower() == 'parquet':
         df.to_parquet(resolved_save_path, index=False)
 
     print("\n" + "=" * 65)
-    print("✨🎉 下载成功！🎉✨")
-    print(f"✅ 文件完好保存至: {resolved_save_path}")
-    print(f"📊 最终矩阵形状 (Shape): {df.shape}")
+    print("[Data Export] 导出完成。")
+    print(f"[Data Export] 文件路径: {resolved_save_path}")
+    print(f"[Data Export] 最终矩阵形状: {df.shape}")
     print("=" * 65 + "\n")
 
 
@@ -328,4 +340,4 @@ if __name__ == "__main__":
     from datetime import datetime
     start_time = datetime.now()
     execute_export()
-    print(f"⏱️ 下载及格式转换链总耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")
+    print(f"[Data Export] 总耗时: {(datetime.now() - start_time).total_seconds():.2f} 秒")

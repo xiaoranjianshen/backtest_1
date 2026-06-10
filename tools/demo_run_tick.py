@@ -8,7 +8,8 @@ import pandas as pd
 import uuid
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 from data_feed.data_provider import DataProvider
 from portfolio.account import Account
@@ -104,12 +105,12 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
                     time_window_seconds=300
                 )
                 sig['plan_id'] = list(executor.active_plans.keys())[-1]
-                print(f"\n[{current_time}] 📡 信号#{signal_idx+1}: {sig['action']} {sig['volume']}手 @ {sig['price']:.0f}")
+                print(f"\n[Tick Demo] {current_time} | Signal #{signal_idx+1}: {sig['action']} {sig['volume']}手 @ {sig['price']:.0f}")
                 print(f"    bid={bid_price:.0f} ask={ask_price:.0f}")
                 signal_idx += 1
             elif current_time > sig_time:
                 # 时间已过但未匹配，说明时间不匹配，跳过
-                print(f"\n⚠️ [{current_time}] 跳过信号#{signal_idx+1} (时间不匹配)")
+                print(f"\n[Tick Demo Warning] {current_time} | 跳过 Signal #{signal_idx+1}，时间不匹配。")
                 signal_idx += 1
             else:
                 # 时间未到
@@ -175,7 +176,7 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
 
                     side = "买入" if dir_enum == Direction.LONG else "卖出"
                     slippage = exec_price - plan.signal_price if dir_enum == Direction.LONG else plan.signal_price - exec_price
-                    print(f"  📝 [{algo_name}] 强制市价平仓: {side}{plan.remaining_volume}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
+                    print(f"  [{algo_name}] 强制市价平仓: {side}{plan.remaining_volume}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
 
                     del pending_orders[plan_id]
                     continue
@@ -224,7 +225,7 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
 
                 side = "买入" if dir_enum == Direction.LONG else "卖出"
                 slippage = exec_price - plan.signal_price if dir_enum == Direction.LONG else plan.signal_price - exec_price
-                print(f"  📝 {algo_name} 立即成交: {side}{vol}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
+                print(f"  {algo_name} 立即成交: {side}{vol}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
             else:
                 # TWAP/VWAP：用即时 bid/ask 挂单（追踪市场）
                 # 检查是否快到时间窗口末尾，如果是则强制市价成交
@@ -267,7 +268,8 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
 
                     side = "买入" if dir_enum == Direction.LONG else "卖出"
                     slippage = exec_price - plan.signal_price if dir_enum == Direction.LONG else plan.signal_price - exec_price
-                    print(f"  📝 [{algo_name}] 强制市价吃单: {side}{vol}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
+                    print(f"  [{algo_name}] 强制市价成交: {side}{vol}手 @ 均{exec_price:.1f} {level_details} 滑点:{slippage:+.0f}")
+                    continue
                 else:
                     # 正常挂限价单
                     # 买入挂即时 ask（卖一价）
@@ -291,7 +293,7 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
                 pending_orders[plan_id] = (order, submit_vol, limit_price)
 
                 side = "买入" if dir_enum == Direction.LONG else "卖出"
-                print(f"  📝 {algo_name} 下单: {side}{submit_vol}手 @ 限价{limit_price:.0f} (bid={bid_price:.0f} ask={ask_price:.0f})")
+                print(f"  {algo_name} 下单: {side}{submit_vol}手 @ 限价{limit_price:.0f} (bid={bid_price:.0f} ask={ask_price:.0f})")
 
         # 撮合 pending_orders 中的限价单
         if pending_orders:
@@ -338,7 +340,7 @@ def run_tick_execution(df_tick: pd.DataFrame, signals: list, executor_class, alg
     exec_df['slippage'] = exec_df.apply(
         lambda r: r['exec_price'] - r['signal_price'] if 'LONG' in r['direction'] else r['signal_price'] - r['exec_price'], axis=1)
 
-    print(f"\n📊 {algo_name} 成交明细:")
+    print(f"\n[Tick Demo] {algo_name} 成交明细:")
     print(f"   {'时间':<20} {'方向':<6} {'手数':>4} {'信号价':>8} {'成交价':>8} {'滑点':>8}")
     print("   " + "-" * 60)
     for _, row in exec_df.iterrows():
@@ -358,7 +360,7 @@ def main():
     print("=" * 70)
 
     provider = DataProvider()
-    print("\n📡 获取 Tick 数据...")
+    print("\n[Tick Demo] 获取 Tick 数据...")
     df_tick = provider.get_history(
         symbols=['KQ.m@SHFE.rb'],
         start_date='2025-02-25 09:00:00',
@@ -367,10 +369,10 @@ def main():
     )
 
     if df_tick.empty:
-        print("❌ 没有 Tick 数据！")
+        print("[Tick Demo Error] 没有 Tick 数据。")
         return
 
-    print(f"✅ Tick 数据: {len(df_tick)} 条")
+    print(f"[Tick Demo] Tick 数据: {len(df_tick)} 条")
 
     # 生成20个测试信号，分布在数据范围内
     import numpy as np
@@ -391,7 +393,7 @@ def main():
 
     print(f"验证: bid_col={test_bid_col}, ask_col={test_ask_col}")
     if not test_bid_col or not test_ask_col:
-        print("⚠️ 警告: bid/ask 列未找到，使用默认值")
+        print("[Tick Demo Warning] bid/ask 列未找到，使用默认值。")
         test_bid_col = test_ask_col = None
 
     signals = []
@@ -449,7 +451,7 @@ def main():
         results[algo_name] = result
         exec_df = result['exec_df']
         total_vol = int(exec_df['volume'].sum()) if len(exec_df) > 0 else 0
-        print(f"\n📈 信号数: {len(signals)} | 下单手数: {sum(s['volume'] for s in signals)} | 成交手数: {total_vol} | 成交次数: {len(exec_df)}")
+        print(f"\n信号数: {len(signals)} | 下单手数: {sum(s['volume'] for s in signals)} | 成交手数: {total_vol} | 成交次数: {len(exec_df)}")
 
     print("\n" + "=" * 70)
     print("算法对比总结")

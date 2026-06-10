@@ -1,0 +1,14 @@
+{
+  "strategy": "breakout_pyramid",
+  "symbols": "rb,hc,i,ta,ma,p,y,sr",
+  "freq": "1d",
+  "data_type": "main",
+  "start_date": "2021-01-01",
+  "end_date": "2022-01-01",
+  "initial_capital": 5000000.0,
+  "lookback": 20,
+  "step_volume": 5,
+  "max_pyramid_volume": 20,
+  "allow_short": true,
+  "enable_main_rollover": true
+}

@@ -5,6 +5,7 @@
 from enum import Enum
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 import uuid
 
 class OrderType(Enum):
@@ -47,6 +48,7 @@ class Order:
 
     # 运行时状态 (由 Broker 撮合时动态修改)
     order_type: OrderType = OrderType.MARKET
+    slippage_ticks: Optional[float] = None
     status: OrderStatus = OrderStatus.PENDING
     filled_volume: int = 0
     filled_price: float = 0.0

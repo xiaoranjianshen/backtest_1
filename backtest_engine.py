@@ -23,6 +23,7 @@ STRATEGY_CLASS_TO_CONFIG_KEY = {
     "GeneralMultiMAStrategy": "general_multi_ma",
     "BreakoutPyramidStrategy": "breakout_pyramid",
     "DualMAStrategy": "dual_ma",
+    "ZScoreReversalStrategy": "zscore_reversal",
     "CompositeFactorStrategy": "composite_factor",
     "CrossMomentumFactor": "cross_momentum",
 }

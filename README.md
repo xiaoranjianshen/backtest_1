@@ -16,6 +16,70 @@ STRATEGY_GUIDE.md
 - 策略信号、目标仓位、订单、成交、账户之间怎么流转。
 - 新策略应该继承哪个模板、实现哪个函数。
 
+## 第一次安装
+
+推荐环境：
+
+```text
+Windows 10/11
+Python 3.11
+PowerShell 5 或更高版本
+```
+
+如果电脑还没有 Python，先从 Python 官网安装 Python 3.11，并勾选 `Add python.exe to PATH`。
+
+### 一键安装依赖
+
+方式一：双击项目根目录下的文件：
+
+```text
+install_windows.bat
+```
+
+方式二：在项目根目录打开 PowerShell，执行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows.ps1
+```
+
+安装脚本会自动完成：
+
+- 检查本机是否存在 Python 3.10 或更高版本，优先使用 Python 3.11。
+- 创建项目虚拟环境 `.venv`。
+- 升级 `pip / setuptools / wheel`。
+- 执行 `pip install -r requirements.txt` 安装依赖。
+- 检查关键依赖是否能正常导入。
+
+安装完成后，如果使用 PowerShell 手动运行脚本，先激活虚拟环境：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+然后再运行回测脚本。
+
+### 数据库配置
+
+项目的历史行情从 ClickHouse 读取。依赖安装只负责安装 Python 包，不会自动提供数据库权限。运行真实回测前，需要确认当前电脑能访问行情库，并配置以下环境变量：
+
+```powershell
+$env:BACKTEST_CH_HOST="你的ClickHouse地址"
+$env:BACKTEST_CH_USER="你的用户名"
+$env:BACKTEST_CH_PASS="你的密码"
+```
+
+如果只想临时在当前 PowerShell 窗口运行，用上面的写法即可。关闭窗口后变量会失效。
+
+如果希望长期保存到 Windows 用户环境变量，可以执行：
+
+```powershell
+[Environment]::SetEnvironmentVariable("BACKTEST_CH_HOST", "你的ClickHouse地址", "User")
+[Environment]::SetEnvironmentVariable("BACKTEST_CH_USER", "你的用户名", "User")
+[Environment]::SetEnvironmentVariable("BACKTEST_CH_PASS", "你的密码", "User")
+```
+
+设置完成后，重新打开 PowerShell 或 PyCharm，再运行项目。
+
 ## 快速运行
 
 常用运行入口都放在 `run_scripts/`。这些脚本运行完成后会直接打开 HTML 报告：
@@ -25,6 +89,7 @@ python run_scripts/run_general_multi_ma.py
 python run_scripts/run_dual_ma.py
 python run_scripts/run_factor.py
 python run_scripts/run_breakout_pyramid.py
+python run_scripts/run_zscore_reversal.py
 ```
 
 运行入口里会调用：
@@ -125,21 +190,25 @@ strategy/custom/
 run_scripts/run_xxx.py
 ```
 
-## 依赖
+## 依赖清单
 
-参考 `requirements.txt`：
+依赖统一维护在 `requirements.txt`。新用户不要手动一个个安装，优先执行一键安装脚本。
 
-```bash
-pip install -r requirements.txt
-```
+| 依赖包 | 用途 |
+| --- | --- |
+| `clickhouse-driver` | 连接 ClickHouse，读取历史行情数据。 |
+| `pandas` | 处理行情表、成交表、绩效统计表。 |
+| `numpy` | 计算收益、波动、回撤等数值指标。 |
+| `pyarrow` | 支持 `pandas` 读写 parquet，本地行情缓存和数据导出会用到。 |
+| `matplotlib` | 预留给静态图和扩展分析模块使用。 |
+| `plotly` | 生成交互式图表和 HTML 回测报告。 |
+| `kaleido` | 支持 Plotly 静态图片导出，固定为 `0.2.1` 以减少版本兼容问题。 |
+| `streamlit` | 配置中心页面，用于选择策略、品种、周期和参数后运行回测。 |
 
-项目依赖 ClickHouse 历史行情库。表路由在 `config.py` 里配置，数据库连接信息从环境变量读取，避免把账号密码写进代码仓库。
-
-Windows PowerShell 示例：
+手动安装命令如下，通常只在调试安装问题时使用：
 
 ```powershell
-$env:BACKTEST_CH_HOST="你的ClickHouse地址"
-$env:BACKTEST_CH_USER="你的用户名"
-$env:BACKTEST_CH_PASS="你的密码"
-python run_scripts/run_general_multi_ma.py
+python -m pip install -r requirements.txt
 ```
+
+注意：Python 包安装成功不等于回测一定能取到数据。真实回测还需要 ClickHouse 地址、账号、密码正确，并且当前电脑在允许访问数据库的网络环境内。

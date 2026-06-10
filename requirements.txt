@@ -1,7 +1,8 @@
 clickhouse-driver>=0.2.6
-pandas>=2.0.0
-numpy>=1.24.0
+pandas>=2.0.0,<3.0
+numpy>=1.24.0,<3.0
+pyarrow>=14.0.0
 matplotlib>=3.7.0
-plotly>=5.18.0
-kaleido>=0.2.1
-streamlit>=1.35.0
+plotly>=5.18.0,<6.0
+kaleido==0.2.1
+streamlit>=1.35.0,<2.0

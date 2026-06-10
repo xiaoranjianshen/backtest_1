@@ -29,7 +29,7 @@ if loaded_config is not None:
         del sys.modules["config"]
 
 from config import SYMBOL_DICT
-from data_manager import BacktestDataManager
+import data_manager as data_manager_module
 from labels import (
     DATA_TYPE_LABELS,
     FREQ_LABELS,
@@ -42,7 +42,9 @@ import run_from_config as run_config_module
 from ui_config import ACTIVE_REPORT_CONFIG_PATH, APP_ICON, APP_TITLE, CUSTOM_CSS, LAYOUT, PROJECT_ROOT
 
 
+data_manager_module = importlib.reload(data_manager_module)
 run_config_module = importlib.reload(run_config_module)
+BacktestDataManager = data_manager_module.BacktestDataManager
 STRATEGY_SPECS = run_config_module.STRATEGY_SPECS
 available_strategy_specs = run_config_module.available_strategy_specs
 
@@ -109,6 +111,46 @@ def _strategy_label(key: str) -> str:
     return spec.label if spec else key
 
 
+def _load_active_config() -> tuple[float, dict]:
+    if not ACTIVE_REPORT_CONFIG_PATH.exists():
+        return 0.0, {}
+
+    try:
+        config = json.loads(ACTIVE_REPORT_CONFIG_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return 0.0, {}
+
+    try:
+        mtime = ACTIVE_REPORT_CONFIG_PATH.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    return mtime, config if isinstance(config, dict) else {}
+
+
+def _date_from_config(config: dict, key: str, default: date) -> date:
+    text = str(config.get(key) or "").strip()
+    if not text:
+        return default
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return default
+
+
+def _option_index(options: list, value, default: int = 0) -> int:
+    try:
+        return options.index(value)
+    except ValueError:
+        return default
+
+
+def _bool_from_config(config: dict, key: str, default: bool) -> bool:
+    value = config.get(key, default)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
 def _parse_symbol_text(value: str) -> list[str]:
     text = (
         str(value or "")
@@ -166,17 +208,10 @@ def _ordered_symbols(symbols) -> list[str]:
 
 
 def _active_report_symbols() -> tuple[float, list[str]]:
-    if not ACTIVE_REPORT_CONFIG_PATH.exists():
-        return 0.0, []
-
-    try:
-        config = json.loads(ACTIVE_REPORT_CONFIG_PATH.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return 0.0, []
-
+    mtime, config = _load_active_config()
     symbols = _coerce_symbols(config.get("symbols"))
     if symbols:
-        return ACTIVE_REPORT_CONFIG_PATH.stat().st_mtime, _ordered_symbols(symbols)
+        return mtime, _ordered_symbols(symbols)
     return 0.0, []
 
 
@@ -298,6 +333,7 @@ def _post_report_update(url: str):
 
 
 def _run_backtest(dm: BacktestDataManager, config: dict, timeout_seconds: int):
+    dm.write_active_config(config)
     config_path = dm.write_config(config)
     command = dm.config_command(config_path)
     env = os.environ.copy()
@@ -330,7 +366,7 @@ def _run_backtest(dm: BacktestDataManager, config: dict, timeout_seconds: int):
         return dashboard_url
 
 
-def _market_fields():
+def _market_fields(active_config: dict):
     st.markdown("#### 市场与区间 (Market)")
     symbols = _symbol_pool_selector()
 
@@ -338,17 +374,31 @@ def _market_fields():
     initial_capital = cap_col.number_input(
         "初始资金",
         min_value=10_000.0,
-        value=5_000_000.0,
+        value=float(active_config.get("initial_capital", 5_000_000.0)),
         step=50_000.0,
     )
-    freq = freq_col.selectbox("周期", ["1d", "5m", "1m", "tick"], format_func=format_with_mapping(FREQ_LABELS))
+    freq_options = ["1d", "5m", "1m", "tick"]
+    freq = freq_col.selectbox(
+        "周期",
+        freq_options,
+        index=_option_index(freq_options, active_config.get("freq", "1d")),
+        format_func=format_with_mapping(FREQ_LABELS),
+    )
+    data_type_options = ["main", "main_adj", "index", "all"]
     data_type = data_col.selectbox(
         "数据类型",
-        ["main", "main_adj", "index", "all"],
+        data_type_options,
+        index=_option_index(data_type_options, active_config.get("data_type", "main")),
         format_func=format_with_mapping(DATA_TYPE_LABELS),
     )
-    start_date = start_col.date_input("开始日期", value=date(2021, 1, 1))
-    end_date = end_col.date_input("结束日期", value=date(2022, 1, 1))
+    start_date = start_col.date_input(
+        "开始日期",
+        value=_date_from_config(active_config, "start_date", date(2021, 1, 1)),
+    )
+    end_date = end_col.date_input(
+        "结束日期",
+        value=_date_from_config(active_config, "end_date", date(2022, 1, 1)),
+    )
 
     return {
         "symbols": symbols,
@@ -360,40 +410,75 @@ def _market_fields():
     }
 
 
-def _general_signal_fields():
+def _general_signal_fields(active_config: dict):
     st.markdown("#### 仓位规则 (Sizing)")
     size_1, size_2, size_3, size_4 = st.columns(4)
+    sizing_options = list(SIZING_LABELS)
     sizing_mode = size_1.selectbox(
         "开仓方式",
-        list(SIZING_LABELS),
-        index=list(SIZING_LABELS).index("equity_pct"),
+        sizing_options,
+        index=_option_index(sizing_options, active_config.get("sizing_mode", "equity_pct")),
         format_func=format_with_mapping(SIZING_LABELS),
     )
-    default_value = 0.03 if sizing_mode.endswith("_pct") else 1.0
+    default_value = float(active_config.get("sizing_value", 0.03 if sizing_mode.endswith("_pct") else 1.0))
     sizing_value = size_2.number_input("参数值", min_value=0.0, value=float(default_value), step=0.01, format="%.4f")
-    min_volume = size_3.number_input("最小手数", min_value=0, value=1, step=1)
-    max_volume_raw = size_4.number_input("最大手数 (0=不限)", min_value=0, value=0, step=1)
+    min_volume = size_3.number_input("最小手数", min_value=0, value=int(active_config.get("min_volume", 1)), step=1)
+    max_volume_default = active_config.get("max_volume")
+    max_volume_default = 0 if max_volume_default in (None, "", "None") else int(max_volume_default)
+    max_volume_raw = size_4.number_input("最大手数 (0=不限)", min_value=0, value=max_volume_default, step=1)
 
     st.markdown("#### 执行规则 (Execution)")
     exe_1, exe_2, exe_3, exe_4 = st.columns(4)
-    order_type = exe_1.selectbox("订单类型", ["market", "limit"], format_func=format_with_mapping(ORDER_TYPE_LABELS))
-    price_field = exe_2.selectbox("参考价格", ["close", "open", "high", "low"], index=0)
-    slippage_ticks = exe_3.number_input("市价滑点 (跳)", min_value=0.0, value=0.5, step=0.5)
+    order_type_options = ["market", "limit"]
+    order_type = exe_1.selectbox(
+        "订单类型",
+        order_type_options,
+        index=_option_index(order_type_options, active_config.get("order_type", "market")),
+        format_func=format_with_mapping(ORDER_TYPE_LABELS),
+    )
+    price_field_options = ["close", "open", "high", "low"]
+    price_field = exe_2.selectbox(
+        "参考价格",
+        price_field_options,
+        index=_option_index(price_field_options, active_config.get("price_field", "close")),
+    )
+    slippage_ticks = exe_3.number_input(
+        "市价滑点 (跳)",
+        min_value=0.0,
+        value=float(active_config.get("slippage_ticks", 0.5)),
+        step=0.5,
+    )
+    limit_mode_options = ["at_close", "better_ticks", "worse_ticks"]
     limit_mode = exe_4.selectbox(
         "限价模式",
-        ["at_close", "better_ticks", "worse_ticks"],
+        limit_mode_options,
+        index=_option_index(limit_mode_options, active_config.get("limit_mode", "at_close")),
         format_func=format_with_mapping(LIMIT_MODE_LABELS),
     )
     limit_ticks = 0.0
     if order_type == "limit":
-        limit_ticks = st.number_input("限价偏移跳数", min_value=0.0, value=0.0, step=0.5)
+        limit_ticks = st.number_input(
+            "限价偏移跳数",
+            min_value=0.0,
+            value=float(active_config.get("limit_ticks", 0.0)),
+            step=0.5,
+        )
         st.caption("限价单本身不额外叠加成交滑点；这里的市价滑点只影响市价单。")
 
     st.markdown("#### 平仓规则 (Exit)")
     exit_1, exit_2, exit_3 = st.columns(3)
-    close_pct = exit_1.slider("信号为 0 时平仓比例", min_value=0.0, max_value=1.0, value=1.0, step=0.05)
-    allow_reverse = exit_2.checkbox("允许反手", value=True)
-    respect_pending_orders = exit_3.checkbox("考虑未成交挂单", value=True)
+    close_pct = exit_1.slider(
+        "信号为 0 时平仓比例",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(active_config.get("close_pct", 1.0)),
+        step=0.05,
+    )
+    allow_reverse = exit_2.checkbox("允许反手", value=_bool_from_config(active_config, "allow_reverse", True))
+    respect_pending_orders = exit_3.checkbox(
+        "考虑未成交挂单",
+        value=_bool_from_config(active_config, "respect_pending_orders", True),
+    )
 
     return {
         "sizing_mode": sizing_mode,
@@ -413,31 +498,110 @@ def _general_signal_fields():
     }
 
 
-def _strategy_parameter_fields(strategy_key: str):
+def _strategy_parameter_fields(strategy_key: str, active_config: dict):
     st.markdown("#### 策略逻辑参数 (Strategy Logic)")
 
     if strategy_key in {"general_multi_ma", "dual_ma"}:
         col_1, col_2 = st.columns(2)
         return {
-            "fast_window": int(col_1.number_input("快均线窗口", min_value=1, max_value=250, value=10, step=1)),
-            "slow_window": int(col_2.number_input("慢均线窗口", min_value=2, max_value=500, value=30, step=1)),
+            "fast_window": int(col_1.number_input(
+                "快均线窗口",
+                min_value=1,
+                max_value=250,
+                value=int(active_config.get("fast_window", 10)),
+                step=1,
+            )),
+            "slow_window": int(col_2.number_input(
+                "慢均线窗口",
+                min_value=2,
+                max_value=500,
+                value=int(active_config.get("slow_window", 30)),
+                step=1,
+            )),
         }
 
     if strategy_key == "breakout_pyramid":
         col_1, col_2, col_3, col_4 = st.columns(4)
         return {
-            "lookback": int(col_1.number_input("突破回看窗口", min_value=2, value=20, step=1)),
-            "add_scale": float(col_2.number_input("每次增仓强度", min_value=0.1, value=1.0, step=0.1, format="%.2f")),
-            "max_position_scale": float(col_3.number_input("最大仓位强度", min_value=0.1, value=4.0, step=0.5, format="%.2f")),
-            "allow_short": bool(col_4.checkbox("允许做空", value=True)),
+            "lookback": int(col_1.number_input(
+                "突破回看窗口",
+                min_value=2,
+                value=int(active_config.get("lookback", 20)),
+                step=1,
+            )),
+            "add_scale": float(col_2.number_input(
+                "每次增仓强度",
+                min_value=0.1,
+                value=float(active_config.get("add_scale", 1.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "max_position_scale": float(col_3.number_input(
+                "最大仓位强度",
+                min_value=0.1,
+                value=float(active_config.get("max_position_scale", 4.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "allow_short": bool(col_4.checkbox(
+                "允许做空",
+                value=_bool_from_config(active_config, "allow_short", True),
+            )),
+        }
+
+    if strategy_key == "zscore_reversal":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        return {
+            "lookback": int(col_1.number_input(
+                "回看窗口",
+                min_value=2,
+                value=int(active_config.get("lookback", 10)),
+                step=1,
+            )),
+            "entry_z": float(col_2.number_input(
+                "开仓 Z 值",
+                min_value=0.1,
+                value=float(active_config.get("entry_z", 2.1)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "first_exit_z": float(col_3.number_input(
+                "半平 Z 值",
+                value=float(active_config.get("first_exit_z", 0.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "final_exit_z": float(col_4.number_input(
+                "全平 Z 值",
+                min_value=0.1,
+                value=float(active_config.get("final_exit_z", 1.0)),
+                step=0.1,
+                format="%.2f",
+            )),
         }
 
     if strategy_key in {"composite_factor", "cross_momentum"}:
         col_1, col_2, col_3 = st.columns(3)
         return {
-            "rebalance_period": int(col_1.number_input("调仓周期", min_value=1, value=5, step=1)),
-            "top_k": int(col_2.number_input("多空数量", min_value=1, value=2, step=1)),
-            "signal_scale": float(col_3.number_input("单腿信号强度", min_value=0.1, value=1.0, step=0.1, format="%.2f")),
+            "rebalance_period": int(col_1.number_input(
+                "调仓周期",
+                min_value=1,
+                value=int(active_config.get("rebalance_period", 5)),
+                step=1,
+            )),
+            "top_k": int(col_2.number_input(
+                "多空数量",
+                min_value=1,
+                value=int(active_config.get("top_k", 2)),
+                step=1,
+            )),
+            "signal_scale": float(col_3.number_input(
+                "单腿信号强度",
+                min_value=0.1,
+                value=float(active_config.get("signal_scale", 1.0)),
+                step=0.1,
+                format="%.2f",
+            )),
         }
 
     st.caption("该策略没有额外逻辑参数。")
@@ -461,6 +625,7 @@ def _guide():
 
 def main():
     dm = BacktestDataManager()
+    _, active_config = _load_active_config()
     if not _is_embedded():
         st.markdown(
             """
@@ -480,7 +645,10 @@ def main():
     config_tab, guide_tab = st.tabs(["参数配置 (Configuration)", "策略说明 (Guide)"])
     with config_tab:
         strategy_keys = [item["key"] for item in available]
-        default_index = strategy_keys.index("general_multi_ma") if "general_multi_ma" in strategy_keys else 0
+        active_strategy = str(active_config.get("strategy", "general_multi_ma")).strip().lower()
+        if active_strategy not in strategy_keys:
+            active_strategy = "general_multi_ma" if "general_multi_ma" in strategy_keys else strategy_keys[0]
+        default_index = strategy_keys.index(active_strategy)
 
         strategy_key = st.selectbox(
             "策略",
@@ -491,13 +659,16 @@ def main():
 
         config = {
             "strategy": strategy_key,
-            **_market_fields(),
+            **_market_fields(active_config),
         }
-        config.update(_strategy_parameter_fields(strategy_key))
-        config.update(_general_signal_fields())
+        config.update(_strategy_parameter_fields(strategy_key, active_config))
+        config.update(_general_signal_fields(active_config))
 
         col_1, col_2 = st.columns([1, 3])
-        enable_main_rollover = col_1.checkbox("启用主力换月", value=True)
+        enable_main_rollover = col_1.checkbox(
+            "启用主力换月",
+            value=_bool_from_config(active_config, "enable_main_rollover", True),
+        )
         timeout_seconds = int(col_2.number_input("运行超时秒数 (0=不限)", min_value=0, value=0, step=60))
         config["enable_main_rollover"] = bool(enable_main_rollover)
 

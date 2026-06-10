@@ -21,6 +21,11 @@ class BacktestDataManager:
         path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
         return path
 
+    def write_active_config(self, config: dict) -> Path:
+        path = self.runtime_dir / "active_report_config.json"
+        path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
+        return path
+
     def project_python(self) -> str:
         configured = os.environ.get("BACKTEST_PYTHON")
         if configured:

@@ -188,6 +188,24 @@ def _build_dual_ma(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]
     return args
 
 
+def _build_zscore_reversal(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    symbols = _parse_symbols(config.get("symbols", config.get("symbol")))
+    args = _base_args(config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "lookback": int(config.get("lookback", 10)),
+            "entry_z": float(config.get("entry_z", 2.1)),
+            "first_exit_z": float(config.get("first_exit_z", 0.0)),
+            "final_exit_z": float(config.get("final_exit_z", 1.0)),
+            **_general_signal_kwargs(config),
+        },
+    })
+    return args
+
+
 def _build_factor(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
     symbols = _parse_symbols(config.get("symbols", config.get("factor_symbols", config.get("symbol"))))
     args = _base_args(config)
@@ -229,6 +247,14 @@ STRATEGY_SPECS = {
         class_name="DualMAStrategy",
         kind="general_signal",
         builder=_build_dual_ma,
+    ),
+    "zscore_reversal": StrategySpec(
+        key="zscore_reversal",
+        label="ZScore 反转 (Z-Score Reversal)",
+        module="strategy.custom.zscore_reversal",
+        class_name="ZScoreReversalStrategy",
+        kind="general_signal",
+        builder=_build_zscore_reversal,
     ),
     "composite_factor": StrategySpec(
         key="composite_factor",

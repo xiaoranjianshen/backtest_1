@@ -59,6 +59,8 @@ cache_data/
 logs/
 *.csv
 *.pkl
+streamlit_ui_*.log
+ui/.runtime/
 
 # Backtest output results (generated files)
 analyzer/*_Backtest/

@@ -67,7 +67,40 @@ engine 只负责按 bar 把这条链路串起来。
 
    看结果如何被统计和生成网页。
 
-## 2.1 运行前的数据库配置
+## 2.1 首次安装依赖
+
+新用户从 GitHub 下载项目后，优先在项目根目录执行一键安装脚本：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\install_windows.ps1
+```
+
+如果不熟悉命令行，也可以直接双击：
+
+```text
+install_windows.bat
+```
+
+脚本会创建 `.venv` 虚拟环境，并根据 `requirements.txt` 安装项目依赖。依赖包包括：
+
+```text
+clickhouse-driver  连接 ClickHouse 行情库
+pandas             表格数据处理
+numpy              数值计算
+pyarrow            parquet 缓存和导出
+matplotlib         静态图扩展预留
+plotly             HTML 报告交互图表
+kaleido            Plotly 静态图片导出
+streamlit          配置中心页面
+```
+
+安装完成后，手动运行脚本前先激活虚拟环境：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+## 2.2 运行前的数据库配置
 
 行情数据由 `data_feed/ch_loader.py` 从 ClickHouse 读取。`config.py` 只保留表路由和品种配置，数据库连接信息通过环境变量传入，避免把账号密码提交到仓库。
 

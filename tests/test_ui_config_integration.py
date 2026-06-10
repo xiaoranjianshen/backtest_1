@@ -54,6 +54,28 @@ class UiConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(args["strategy_class"].__module__, "strategy.custom.dual_ma")
         self.assertEqual(args["strategy_class"].__name__, "DualMAStrategy")
 
+    def test_zscore_reversal_config_builds_strategy_kwargs(self):
+        args = build_run_arguments({
+            "strategy": "zscore_reversal",
+            "symbols": "rb,hc,i",
+            "start_date": "2021-01-01",
+            "end_date": "2022-01-01",
+            "lookback": 10,
+            "entry_z": 2.1,
+            "first_exit_z": 0.0,
+            "final_exit_z": 1.0,
+            "sizing_mode": "available_pct",
+            "sizing_value": 0.03,
+        })
+
+        self.assertEqual(args["strategy_class"].__module__, "strategy.custom.zscore_reversal")
+        self.assertEqual(args["strategy_class"].__name__, "ZScoreReversalStrategy")
+        self.assertEqual(args["symbols_input"], ["rb", "hc", "i"])
+        self.assertEqual(args["strategy_kwargs"]["target_symbols"], ["rb", "hc", "i"])
+        self.assertEqual(args["strategy_kwargs"]["lookback"], 10)
+        self.assertEqual(args["strategy_kwargs"]["entry_z"], 2.1)
+        self.assertEqual(args["strategy_kwargs"]["sizing"]["mode"], "available_pct")
+
 
 if __name__ == "__main__":
     unittest.main()

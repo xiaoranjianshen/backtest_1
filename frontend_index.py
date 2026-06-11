@@ -598,13 +598,13 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     </div>
                     <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
                         <h2 class="text-lg font-bold text-gray-800 border-l-4 border-emerald-500 pl-3 mb-2">品种交易市值与收益 (Trade Notional & PnL)</h2>
-                        <p class="text-xs text-gray-400 mb-2 pl-3">面积为实际成交市值，颜色为品种净收益；蓝色越深表示收益越高。</p>
+                        <p class="text-xs text-gray-400 mb-2 pl-3">面积为实际成交市值，颜色为品种净收益；红色为盈利，绿色为亏损，颜色越深绝对值越大。</p>
                         <div class="w-full flex justify-center">{html_fig_turnover_pie}</div>
                     </div>
                 </div> 
                 <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
                     <h2 class="text-lg font-bold text-gray-800 border-l-4 border-purple-600 pl-3 mb-2">多品种累计盈亏曲线 (Asset PnL Curves)</h2>
-                    <p class="text-xs text-gray-400 mb-2 pl-3">通过图表左上角下拉框切换板块；图例仍可单独隐藏或显示品种。</p>
+                    <p class="text-xs text-gray-400 mb-2 pl-3">默认显示全部品种曲线；可切换为板块合计。图例按板块分组，点击单个品种隐藏或显示该品种。</p>
                     <div class="w-full">{html_fig_pnl_curves}</div>
                 </div>
                 <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">

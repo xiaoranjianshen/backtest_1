@@ -105,9 +105,9 @@ def _pnl_to_color(pnl: float, max_abs_pnl: float) -> str:
         return "#e5e7eb"
     intensity = min(1.0, abs(float(pnl)) / max_abs_pnl)
     if pnl > 0:
-        return _interpolate_hex_color("#bfdbfe", "#1d4ed8", intensity)
-    if pnl < 0:
         return _interpolate_hex_color("#fecaca", "#dc2626", intensity)
+    if pnl < 0:
+        return _interpolate_hex_color("#bbf7d0", "#16a34a", intensity)
     return "#e5e7eb"
 
 
@@ -957,22 +957,39 @@ class StrategyAnalyzer:
 
         df_match['close_time'] = pd.to_datetime(df_match['close_time'])
         df_match['open_time'] = pd.to_datetime(df_match['open_time'])
-        df_match['hold_minutes'] = (df_match['close_time'] - df_match['open_time']).dt.total_seconds() / 60.0
 
-        def _categorize_duration(mins):
-            if mins <= 5.0:
-                return "高频 (≤5分钟)"
-            elif mins <= 24 * 60.0:
-                return "日内 (5分-1天)"
-            elif mins <= 5 * 24 * 60.0:
-                return "短线 (1-5天)"
-            elif mins <= 15 * 24 * 60.0:
-                return "中线 (5-15天)"
-            else:
+        if self.freq in {'1d', 'd', 'day', 'daily'}:
+            hold_days = (
+                df_match['close_time'].dt.normalize() - df_match['open_time'].dt.normalize()
+            ).dt.days
+
+            def _categorize_days(days):
+                if days <= 0:
+                    return "同日成交 (0天)"
+                if days <= 5:
+                    return "短线 (1-5天)"
+                if days <= 15:
+                    return "中线 (6-15天)"
                 return "长线 (>15天)"
 
-        df_match['duration_class'] = df_match['hold_minutes'].apply(_categorize_duration)
-        order = ["高频 (≤5分钟)", "日内 (5分-1天)", "短线 (1-5天)", "中线 (5-15天)", "长线 (>15天)"]
+            df_match['duration_class'] = hold_days.apply(_categorize_days)
+            order = ["同日成交 (0天)", "短线 (1-5天)", "中线 (6-15天)", "长线 (>15天)"]
+        else:
+            hold_minutes = (df_match['close_time'] - df_match['open_time']).dt.total_seconds() / 60.0
+
+            def _categorize_minutes(mins):
+                if mins <= 5.0:
+                    return "高频 (≤5分钟)"
+                if mins <= 24 * 60.0:
+                    return "日内 (5分-1天)"
+                if mins <= 5 * 24 * 60.0:
+                    return "短线 (1-5天)"
+                if mins <= 15 * 24 * 60.0:
+                    return "中线 (5-15天)"
+                return "长线 (>15天)"
+
+            df_match['duration_class'] = hold_minutes.apply(_categorize_minutes)
+            order = ["高频 (≤5分钟)", "日内 (5分-1天)", "短线 (1-5天)", "中线 (5-15天)", "长线 (>15天)"]
         duration_counts = df_match['duration_class'].value_counts().reindex(order).dropna()
 
         fig = go.Figure(data=[go.Pie(
@@ -1106,44 +1123,97 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_multi_asset_pnl_curves_html_div(self):
-        """生成按板块排序并可筛选的多品种累计盈亏曲线。"""
+        """生成多品种累计盈亏曲线，支持全部品种和板块合计视图。"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty or self.symbol != 'MULTI':
             return "<div class='text-center text-gray-500 py-10'>无多品种交易流水</div>"
 
         df = self.match_df.copy()
         df['close_time'] = pd.to_datetime(df['close_time'])
-        df['sector'] = df['symbol'].apply(_symbol_sector)
 
         fig = go.Figure()
 
         equity_x, _ = self._get_equity_series()
-        base_idx = pd.to_datetime(equity_x).normalize().drop_duplicates() if equity_x else None
+        base_idx = pd.DatetimeIndex(pd.to_datetime(equity_x)).normalize().drop_duplicates() if len(equity_x) > 0 else None
 
         grouped = []
         for sym, grp in df.groupby('symbol'):
             grouped.append((sym, _symbol_sector(sym), grp))
         grouped.sort(key=lambda item: _symbol_sort_key(item[0]))
 
-        trace_sectors = []
+        symbol_series = []
+        index_union = pd.DatetimeIndex([])
         for sym, sector, grp in grouped:
             daily_pnl = grp.groupby(grp['close_time'].dt.normalize())['net_pnl'].sum()
-
             if base_idx is not None and not base_idx.empty:
                 daily_pnl = daily_pnl.reindex(base_idx).fillna(0)
+            else:
+                index_union = index_union.union(daily_pnl.index)
 
+            symbol_series.append({
+                "symbol": sym,
+                "sector": sector,
+                "daily_pnl": daily_pnl,
+            })
+
+        if (base_idx is None or base_idx.empty) and not index_union.empty:
+            index_union = index_union.sort_values()
+            for item in symbol_series:
+                item["daily_pnl"] = item["daily_pnl"].reindex(index_union).fillna(0)
+
+        sectors = []
+        for item in symbol_series:
+            sector = item["sector"]
+            if sector not in sectors:
+                sectors.append(sector)
+
+        sector_daily = {}
+        for sector in sectors:
+            sector_items = [item["daily_pnl"] for item in symbol_series if item["sector"] == sector]
+            if not sector_items:
+                continue
+            sector_daily[sector] = pd.concat(sector_items, axis=1).sum(axis=1)
+
+        trace_meta = []
+        for sector in sectors:
+            daily_pnl = sector_daily.get(sector)
+            if daily_pnl is None:
+                continue
             cum_pnl = daily_pnl.cumsum()
-            x_vals = cum_pnl.index.strftime('%Y-%m-%d').tolist()
-            y_vals = cum_pnl.tolist()
-            sym_label = str(sym).upper()
-            trace_sectors.append(sector)
-
             fig.add_trace(go.Scatter(
-                x=x_vals, y=y_vals,
-                mode='lines', name=sym_label,
-                line=dict(width=1.5),
-                legendgroup=sector,
-                legendgrouptitle_text=sector,
-                customdata=[sector] * len(x_vals),
+                x=cum_pnl.index.strftime('%Y-%m-%d').tolist(),
+                y=cum_pnl.tolist(),
+                mode='lines',
+                name=f'{sector} 合计',
+                line=dict(width=3),
+                legendgroup=f"sector_total:{sector}",
+                visible=False,
+                customdata=[sector] * len(cum_pnl),
+                hovertemplate=(
+                    "板块: %{customdata}<br>"
+                    "日期: %{x}<br>"
+                    "板块累计盈亏: ¥%{y:,.0f}<extra></extra>"
+                )
+            ))
+            trace_meta.append({"sector": sector, "kind": "sector"})
+
+        seen_symbol_sectors = set()
+        for item in symbol_series:
+            sym = item["symbol"]
+            sector = item["sector"]
+            cum_pnl = item["daily_pnl"].cumsum()
+            sym_label = str(sym).upper()
+            legend_title = sector if sector not in seen_symbol_sectors else None
+            seen_symbol_sectors.add(sector)
+            fig.add_trace(go.Scatter(
+                x=cum_pnl.index.strftime('%Y-%m-%d').tolist(),
+                y=cum_pnl.tolist(),
+                mode='lines',
+                name=sym_label,
+                line=dict(width=1.4),
+                legendgroup=f"sector_symbols:{sector}",
+                legendgrouptitle_text=legend_title,
+                visible=True,
+                customdata=[sector] * len(cum_pnl),
                 hovertemplate=(
                     f"合约: {sym_label}<br>"
                     "板块: %{customdata}<br>"
@@ -1151,49 +1221,44 @@ class StrategyAnalyzer:
                     "累计盈亏: ¥%{y:,.0f}<extra></extra>"
                 )
             ))
+            trace_meta.append({"sector": sector, "kind": "symbol", "symbol": sym_label})
 
-        sectors = []
-        for sector in trace_sectors:
-            if sector not in sectors:
-                sectors.append(sector)
-
-        buttons = [
+        view_buttons = [
             dict(
-                label="全部板块",
+                label="全部品种",
                 method="update",
                 args=[
-                    {"visible": [True] * len(trace_sectors)},
+                    {"visible": [item["kind"] == "symbol" for item in trace_meta]},
+                    {"title": None},
+                ],
+            ),
+            dict(
+                label="板块合计",
+                method="update",
+                args=[
+                    {"visible": [item["kind"] == "sector" for item in trace_meta]},
                     {"title": None},
                 ],
             )
         ]
-        for sector in sectors:
-            visible = [item == sector for item in trace_sectors]
-            buttons.append(dict(
-                label=sector,
-                method="update",
-                args=[
-                    {"visible": visible},
-                    {"title": None},
-                ],
-            ))
 
         fig.update_layout(
-            height=430, margin=dict(l=10, r=10, t=56, b=10),
+            height=620, margin=dict(l=10, r=10, t=86, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
             updatemenus=[dict(
-                type="dropdown",
-                direction="down",
+                type="buttons",
+                direction="right",
                 active=0,
                 x=0,
-                y=1.17,
+                y=1.12,
                 xanchor="left",
                 yanchor="top",
-                buttons=buttons,
+                buttons=view_buttons,
                 bgcolor="#ffffff",
                 bordercolor="#d1d5db",
                 font=dict(color="#111827", size=12),
+                pad={"r": 8, "t": 4},
             )],
             legend=dict(
                 orientation="h",
@@ -1202,79 +1267,113 @@ class StrategyAnalyzer:
                 xanchor="right",
                 x=1,
                 traceorder="grouped",
+                groupclick="toggleitem",
                 font=dict(size=10),
             ),
             yaxis=dict(
-                title=dict(text="单品种累计盈亏 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="累计净盈亏 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"), showgrid=True, gridcolor='#f3f4f6'
             )
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_pnl_distribution_html_div(self):
-        """生成逐笔极值盈亏分位数分布图 (#6) - 10%颗粒度，左右对称，全部向上"""
+        """生成逐笔净盈亏分布图，纵轴为交易笔数占比。"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty:
             return "<div class='text-center text-gray-500 py-10'>无交易明细</div>"
 
         df = self.match_df.copy()
-        profits = df[df['net_pnl'] > 0]['net_pnl'].tolist()
-        losses = df[df['net_pnl'] <= 0]['net_pnl'].tolist()
+        pnl_values = pd.to_numeric(df['net_pnl'], errors='coerce').dropna().to_numpy(dtype=float)
+        if pnl_values.size == 0:
+            return "<div class='text-center text-gray-500 py-10'>无有效盈亏数据</div>"
 
-        # 设置 10% 到 100% 的颗粒阶梯 (步长为10)
-        percentiles = list(range(10, 101, 10))
+        def _build_side_bins(values: np.ndarray, side: str) -> list[dict]:
+            if values.size == 0:
+                return []
 
-        # 1. 盈利单 (右侧，X为正，红色)
-        if profits:
-            p_quantiles = np.percentile(profits, percentiles).tolist()
-            p_x = percentiles  # [10, 20, ..., 100]
-        else:
-            p_quantiles, p_x = [], []
+            side_min = float(np.min(values))
+            side_max = float(np.max(values))
+            bin_count = min(15, max(5, int(np.sqrt(values.size))))
 
-        # 2. 亏损单 (左侧，X为负，绿色)
-        # 注意：Y轴金额取绝对值(全部向上)，X轴取负数映射到左侧
-        if losses:
-            l_abs = np.abs(losses)
-            l_quantiles = np.percentile(l_abs, percentiles).tolist()
-            l_x = [-x for x in percentiles]  # [-10, -20, ..., -100]
-        else:
-            l_quantiles, l_x = [], []
+            if side == "loss":
+                left_edge = side_min
+                right_edge = 0.0
+                color = '#16a34a'
+            else:
+                left_edge = 0.0
+                right_edge = side_max
+                color = '#dc2626'
 
-        fig = go.Figure()
+            if left_edge == right_edge:
+                pad = max(abs(left_edge) * 0.1, 1.0)
+                left_edge -= pad
+                right_edge += pad
 
-        # 渲染亏损单 (左侧区)
-        if l_quantiles:
-            fig.add_trace(go.Bar(
-                x=l_x, y=l_quantiles, name='亏损绝对值分位数', marker_color='#16a34a',
-                # 用 customdata 传回正数的百分位用于悬浮展示
-                customdata=percentiles,
-                hovertemplate="亏损极值: 第 %{customdata}% 分位<br>绝对亏损金额: ¥%{y:,.0f}<extra></extra>"
-            ))
+            edges = np.linspace(left_edge, right_edge, bin_count + 1)
+            counts, actual_edges = np.histogram(values, bins=edges)
+            width = float(actual_edges[1] - actual_edges[0])
 
-        # 渲染盈利单 (右侧区)
-        if p_quantiles:
-            fig.add_trace(go.Bar(
-                x=p_x, y=p_quantiles, name='盈利绝对值分位数', marker_color='#dc2626',
-                hovertemplate="盈利极值: 第 %{x}% 分位<br>绝对盈利金额: ¥%{y:,.0f}<extra></extra>"
-            ))
+            rows = []
+            for idx, count in enumerate(counts):
+                if count <= 0:
+                    continue
+                left = float(actual_edges[idx])
+                right = float(actual_edges[idx + 1])
+                rows.append({
+                    "center": (left + right) / 2,
+                    "width": width,
+                    "pct": count / pnl_values.size * 100,
+                    "color": color,
+                    "customdata": [left, right, int(count)],
+                })
+            return rows
+
+        rows = []
+        rows.extend(_build_side_bins(pnl_values[pnl_values < 0], "loss"))
+        rows.extend(_build_side_bins(pnl_values[pnl_values > 0], "profit"))
+
+        zero_count = int(np.sum(pnl_values == 0))
+        if zero_count > 0:
+            widths = [row["width"] for row in rows]
+            zero_width = min(widths) if widths else 1.0
+            rows.append({
+                "center": 0.0,
+                "width": zero_width,
+                "pct": zero_count / pnl_values.size * 100,
+                "color": "#9ca3af",
+                "customdata": [0.0, 0.0, zero_count],
+            })
+
+        rows.sort(key=lambda row: row["center"])
+
+        fig = go.Figure(data=[go.Bar(
+            x=[row["center"] for row in rows],
+            y=[row["pct"] for row in rows],
+            width=[row["width"] for row in rows],
+            name='交易占比',
+            marker_color=[row["color"] for row in rows],
+            customdata=[row["customdata"] for row in rows],
+            hovertemplate=(
+                "净盈亏区间: ¥%{customdata[0]:,.0f} 至 ¥%{customdata[1]:,.0f}<br>"
+                "交易笔数: %{customdata[2]}<br>"
+                "交易占比: %{y:.2f}%<extra></extra>"
+            ),
+        )])
 
         fig.update_layout(
             height=350, margin=dict(l=10, r=10, t=30, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            barmode='group',
-            legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="right", x=1),
             xaxis=dict(
-                title=dict(text="盈亏极值分位数 (%)", font=dict(color="#1f2937")),
+                title=dict(text="逐笔净盈亏区间 (¥)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
-                # 强制规范 X 轴刻度，展示为对称百分比
-                tickvals=[-100, -80, -60, -40, -20, 0, 20, 40, 60, 80, 100],
-                ticktext=["-100%", "-80%", "-60%", "-40%", "-20%", "0", "20%", "40%", "60%", "80%", "100%"],
-                range=[-105, 105],  # 留出一点边距
-                zeroline=True, zerolinecolor='#9ca3af', zerolinewidth=1.5  # 强化中心 0 轴
+                zeroline=False
             ),
             yaxis=dict(
-                title=dict(text="绝对极值金额 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="交易占比 (%)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
-                showgrid=True, gridcolor='#f3f4f6'
+                ticksuffix='%',
+                showgrid=True,
+                gridcolor='#f3f4f6'
             )
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)

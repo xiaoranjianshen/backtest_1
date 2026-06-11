@@ -34,7 +34,7 @@ class FeeModel:
         if not meta:
             print(f"[Fee Model Warning] 品种 {symbol} 未在 FEE_DICT 配置，将使用默认费率。")
             # 兜底防御：给一个极高成本，逼迫回测者去 config 里补全字典
-            return {'multiplier': 10, 'tick_size': 1.0, 'fee_type': 'ratio',
+            return {'multiplier': 10, 'tick_size': 1.0,'margin_rate': 0.10, 'fee_type': 'ratio',
                     'fee_open': 0.001, 'fee_close_history': 0.001, 'fee_close_today': 0.005}
 
         return meta

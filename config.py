@@ -8,8 +8,8 @@ import re
 # 1. 基础设施配置 (Infrastructure)
 # ------------------------------------------
 CH_HOST = os.getenv('BACKTEST_CH_HOST', '192.168.99.12')
-CH_USER = os.getenv('BACKTEST_CH_USER', 'default')
-CH_PASS = os.getenv('BACKTEST_CH_PASS', '')
+CH_USER = os.getenv('BACKTEST_CH_USER', '-')
+CH_PASS = os.getenv('BACKTEST_CH_PASS', '-')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')

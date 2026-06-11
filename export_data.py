@@ -39,11 +39,11 @@ DATA_TYPE = 'all'
 
 # 4. 选择要导出的品种组合
 # 可选: 'all' / 'custom' / 'sector'
-SYMBOL_SELECTION_MODE = 'all'
+SYMBOL_SELECTION_MODE = 'custom'
 
 # 模式 A：全市场所有品种一次性全部导出（当前启用）
 # 模式 B：自定义指定品种组合（需要时再打开 custom）
-#INPUT_SYMBOLS = ['rb', 'I', 'TA605', 'rb2410']
+INPUT_SYMBOLS = ['rb', 'I', 'TA605', 'rb2410']
 # 模式 C：按照板块筛选导出（需要时再打开 sector）
 #TARGET_SECTOR = '黑色'
 

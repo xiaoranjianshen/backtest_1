@@ -3,7 +3,7 @@ import math
 
 import pandas as pd
 
-from broker.order import Direction
+from broker.order import Direction, OrderType
 from config import pure_product_code
 from strategy.common.execution import ExecutionPolicy
 from strategy.common.sizing import PositionSizer
@@ -49,9 +49,15 @@ class SignalRebalancer:
                 records.append(record)
                 continue
 
-            target_net = self._resolve_target_net(sym, intent, bar_data[sym], current_prices, current_net)
+            target_net = self._resolve_target_net(sym, intent, bar_data[sym], current_prices, working_net)
+            working_net, canceled_count = self._cancel_pending_towards_target(sym, working_net, target_net)
             diff = target_net - working_net
-            record.update({"target_net": target_net, "diff": diff})
+            record.update({
+                "target_net": target_net,
+                "working_net_after_cancel": working_net,
+                "canceled_pending_orders": canceled_count,
+                "diff": diff,
+            })
 
             if diff == 0:
                 record["action"] = "no_order"
@@ -199,34 +205,45 @@ class SignalRebalancer:
             self._send(sym, Direction.SHORT, "short", sell_target, bar, intent)
 
     def _send(self, sym: str, order_direction: Direction, action: str, volume: int, bar: dict, intent):
-        price, reference_price = self.execution.get_order_prices(
-            sym,
-            order_direction,
-            bar,
-            self.strategy.account,
-            explicit_limit_price=intent.limit_price,
-        )
-        slippage_ticks = self.execution.config.slippage_ticks if price == 0.0 else None
+        order_type_override = str(intent.extra.get("order_type", "")).strip().lower()
+        ttl_seconds = intent.extra.get("order_ttl_seconds", self.execution.config.order_ttl_seconds)
+
+        if order_type_override in {"market", "opponent"}:
+            price = 0.0
+            reference_price = self.execution._reference_price(bar, self.execution.config.price_field)
+            broker_order_type = OrderType.OPPONENT if order_type_override == "opponent" else OrderType.MARKET
+            slippage_ticks = None if broker_order_type == OrderType.OPPONENT else self.execution.config.slippage_ticks
+        else:
+            price, reference_price = self.execution.get_order_prices(
+                sym,
+                order_direction,
+                bar,
+                self.strategy.account,
+                explicit_limit_price=intent.limit_price,
+            )
+            configured_order_type = self.execution.config.order_type.lower()
+            broker_order_type = OrderType.OPPONENT if configured_order_type == "opponent" else None
+            slippage_ticks = self.execution.config.slippage_ticks if price == 0.0 and broker_order_type is None else None
 
         if action == "buy":
             self.strategy.buy(
                 sym, volume=volume, price=price, reference_price=reference_price,
-                slippage_ticks=slippage_ticks
+                slippage_ticks=slippage_ticks, order_type=broker_order_type, ttl_seconds=ttl_seconds
             )
         elif action == "sell":
             self.strategy.sell(
                 sym, volume=volume, price=price, reference_price=reference_price,
-                slippage_ticks=slippage_ticks
+                slippage_ticks=slippage_ticks, order_type=broker_order_type, ttl_seconds=ttl_seconds
             )
         elif action == "short":
             self.strategy.short(
                 sym, volume=volume, price=price, reference_price=reference_price,
-                slippage_ticks=slippage_ticks
+                slippage_ticks=slippage_ticks, order_type=broker_order_type, ttl_seconds=ttl_seconds
             )
         elif action == "cover":
             self.strategy.cover(
                 sym, volume=volume, price=price, reference_price=reference_price,
-                slippage_ticks=slippage_ticks
+                slippage_ticks=slippage_ticks, order_type=broker_order_type, ttl_seconds=ttl_seconds
             )
         else:
             raise ValueError(f"Unsupported rebalance action: {action}")
@@ -237,8 +254,33 @@ class SignalRebalancer:
         for order in self.strategy.broker.pending_orders:
             if pure_product_code(order.symbol) != raw_symbol:
                 continue
-            pending_delta += order.volume if order.direction == Direction.LONG else -order.volume
+            pending_delta += self._order_net_delta(order)
         return pending_delta
+
+    def _cancel_pending_towards_target(self, symbol: str, working_net: int, target_net: int) -> tuple[int, int]:
+        raw_symbol = pure_product_code(symbol)
+        canceled_count = 0
+
+        for order in list(self.strategy.broker.pending_orders):
+            if working_net == target_net:
+                break
+            if pure_product_code(order.symbol) != raw_symbol:
+                continue
+
+            delta = self._order_net_delta(order)
+            should_cancel = (working_net > target_net and delta > 0) or (working_net < target_net and delta < 0)
+            if not should_cancel:
+                continue
+
+            if self.strategy.broker.cancel_order(order.order_id):
+                working_net -= delta
+                canceled_count += 1
+
+        return working_net, canceled_count
+
+    @staticmethod
+    def _order_net_delta(order) -> int:
+        return order.volume if order.direction == Direction.LONG else -order.volume
 
     @staticmethod
     def _current_prices(bar_data: dict) -> dict:

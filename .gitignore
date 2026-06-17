@@ -54,6 +54,7 @@ env/
 
 # Project specific - sensitive / generated data
 .env
+.codex_tmp/
 cache_data/
 *.parquet
 logs/

@@ -1,0 +1,80 @@
+[Tuner] Loading tick matrix once...
+[Data Loader] 命中本地缓存: ebb30466，正在加载。
+[Data Aligner] 正在对齐 2 个品种，生成宽表矩阵...
+[Data Aligner] 矩阵对齐清洗完成，shape=(133195, 18)
+[Data Provider] 数据矩阵对齐完成，shape=(133195, 18)
+[Tuner] Matrix shape=(133195, 18), range=2026-05-07 09:00:00.500000 -> 2026-05-09 02:29:59.500002
+[Tuner] 001/60 pnl=-758.78 final=-758.78 trades=13 wr=53.85% best=-758.78
+[Tuner] 002/60 pnl=-279.41 final=-279.41 trades=4 wr=25.00% best=-758.78
+[Tuner] 003/60 pnl=105.10 final=105.10 trades=6 wr=50.00% best=105.10
+[Tuner] 004/60 pnl=560.00 final=560.00 trades=1 wr=100.00% best=105.10
+[Tuner] 005/60 pnl=-89.10 final=-59.00 trades=3 wr=33.33% best=105.10
+[Tuner] 006/60 pnl=-140.00 final=-140.00 trades=1 wr=0.00% best=105.10
+[Tuner] 007/60 pnl=-479.91 final=-479.91 trades=3 wr=0.00% best=105.10
+[Tuner] 008/60 pnl=76.24 final=76.24 trades=5 wr=40.00% best=105.10
+[Tuner] 009/60 pnl=-134.95 final=-134.95 trades=1 wr=0.00% best=105.10
+[Tuner] 010/60 pnl=-240.34 final=-240.34 trades=7 wr=28.57% best=105.10
+[Tuner] 011/60 pnl=-79.82 final=-79.82 trades=4 wr=50.00% best=105.10
+[Tuner] 012/60 pnl=-29.92 final=-29.92 trades=2 wr=50.00% best=105.10
+[Tuner] 013/60 pnl=-239.91 final=-239.91 trades=2 wr=0.00% best=105.10
+[Tuner] 014/60 pnl=180.85 final=210.95 trades=5 wr=60.00% best=105.10
+[Tuner] 015/60 pnl=420.05 final=495.08 trades=3 wr=66.67% best=105.10
+[Tuner] 016/60 pnl=385.41 final=385.41 trades=7 wr=71.43% best=385.41
+[Tuner] 017/60 pnl=-463.63 final=-463.63 trades=10 wr=20.00% best=385.41
+[Tuner] 018/60 pnl=-758.78 final=-758.78 trades=13 wr=53.85% best=385.41
+[Tuner] 019/60 pnl=-259.96 final=-259.96 trades=2 wr=0.00% best=385.41
+[Tuner] 020/60 pnl=-89.98 final=-89.98 trades=1 wr=0.00% best=385.41
+[Tuner] 021/60 pnl=-946.82 final=538.36 trades=20 wr=30.00% best=385.41
+[Tuner] 022/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=385.41
+[Tuner] 023/60 pnl=-58.88 final=-58.88 trades=8 wr=37.50% best=385.41
+[Tuner] 024/60 pnl=-18.32 final=-18.32 trades=24 wr=25.00% best=385.41
+[Tuner] 025/60 pnl=-59.81 final=-59.81 trades=1 wr=0.00% best=385.41
+[Tuner] 026/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=385.41
+[Tuner] 027/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=385.41
+[Tuner] 028/60 pnl=-164.84 final=-164.84 trades=6 wr=33.33% best=385.41
+[Tuner] 029/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=385.41
+[Tuner] 030/60 pnl=-424.33 final=-424.33 trades=7 wr=28.57% best=385.41
+[Tuner] 031/60 pnl=-89.98 final=-89.98 trades=1 wr=0.00% best=385.41
+[Tuner] 032/60 pnl=-284.27 final=-284.27 trades=7 wr=42.86% best=385.41
+[Tuner] 033/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=385.41
+[Tuner] 034/60 pnl=-104.75 final=-104.75 trades=3 wr=33.33% best=385.41
+[Tuner] 035/60 pnl=940.00 final=940.00 trades=2 wr=100.00% best=940.00
+[Tuner] 036/60 pnl=-2820.01 final=-2820.01 trades=32 wr=9.38% best=940.00
+[Tuner] 037/60 pnl=-1757.78 final=-1757.78 trades=27 wr=18.52% best=940.00
+[Tuner] 038/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] 039/60 pnl=-83.73 final=-83.73 trades=6 wr=33.33% best=940.00
+[Tuner] 040/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] 041/60 pnl=-44.80 final=-44.80 trades=1 wr=0.00% best=940.00
+[Tuner] 042/60 pnl=-2414.72 final=-2789.63 trades=76 wr=34.21% best=940.00
+[Tuner] 043/60 pnl=-149.82 final=-149.82 trades=1 wr=0.00% best=940.00
+[Tuner] 044/60 pnl=-394.22 final=-394.22 trades=5 wr=20.00% best=940.00
+[Tuner] 045/60 pnl=-1974.68 final=-1974.68 trades=27 wr=33.33% best=940.00
+[Tuner] 046/60 pnl=-209.94 final=-209.94 trades=2 wr=0.00% best=940.00
+[Tuner] 047/60 pnl=10.02 final=10.02 trades=2 wr=50.00% best=940.00
+[Tuner] 048/60 pnl=-477.07 final=-477.07 trades=11 wr=27.27% best=940.00
+[Tuner] 049/60 pnl=-254.02 final=-254.02 trades=6 wr=33.33% best=940.00
+[Tuner] 050/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] 051/60 pnl=-1594.73 final=-1594.74 trades=26 wr=30.77% best=940.00
+[Tuner] 052/60 pnl=-149.09 final=-118.99 trades=12 wr=50.00% best=940.00
+[Tuner] 053/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] 054/60 pnl=357.34 final=-512.60 trades=38 wr=57.89% best=940.00
+[Tuner] 055/60 pnl=-89.98 final=-89.98 trades=1 wr=0.00% best=940.00
+[Tuner] 056/60 pnl=-29.58 final=-29.58 trades=4 wr=25.00% best=940.00
+[Tuner] 057/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] 058/60 pnl=291.75 final=291.75 trades=9 wr=66.67% best=940.00
+[Tuner] 059/60 pnl=-39.32 final=-39.32 trades=11 wr=36.36% best=940.00
+[Tuner] 060/60 pnl=0.00 final=0.00 trades=0 wr=0.00% best=940.00
+[Tuner] Finished in 1326.5s
+[Tuner] CSV: C:\Users\tnori\PyCharmMiscProject\backtest_1\exports\tick_tuning\tick_scalping_tuning_20260615_105817.csv
+[Tuner] Best JSON: C:\Users\tnori\PyCharmMiscProject\backtest_1\exports\tick_tuning\tick_scalping_best_20260615_105817.json
+[Tuner] Top 10:
+#1 pnl=940.00, trades=2, final=940.00, wr=100.00%, pf=0.00, dd=0.00, params=shock=5.0, tail=0.002, move=2.0, dr=0.8, spread=2.0, hold=30.0, tp=16.0, sl=3.0, confirm=1.0, retrace=0.2, order=limit, limit=better_ticks:1.0
+#2 pnl=385.41, trades=7, final=385.41, wr=71.43%, pf=2.26, dd=-200.00, params=shock=5.0, tail=0.001, move=1.5, dr=0.7, spread=2.0, hold=5.0, tp=12.0, sl=8.0, confirm=2.0, retrace=0.35, order=limit, limit=better_ticks:1.0
+#3 pnl=291.75, trades=9, final=291.75, wr=66.67%, pf=1.87, dd=-259.42, params=shock=5.0, tail=0.01, move=2.0, dr=0.7, spread=2.0, hold=5.0, tp=12.0, sl=8.0, confirm=2.0, retrace=0.5, order=limit, limit=at_close:0.0
+#4 pnl=105.10, trades=6, final=105.10, wr=50.00%, pf=1.26, dd=-304.93, params=shock=8.0, tail=0.001, move=1.5, dr=0.65, spread=2.0, hold=8.0, tp=8.0, sl=6.0, confirm=2.0, retrace=0.5, order=limit, limit=at_close:1.0
+#5 pnl=76.24, trades=5, final=76.24, wr=40.00%, pf=1.28, dd=-268.92, params=shock=8.0, tail=0.01, move=2.0, dr=0.8, spread=2.0, hold=15.0, tp=12.0, sl=6.0, confirm=2.0, retrace=0.35, order=limit, limit=worse_ticks:1.0
+#6 pnl=10.02, trades=2, final=10.02, wr=50.00%, pf=1.07, dd=-140.00, params=shock=3.0, tail=0.002, move=4.0, dr=0.8, spread=1.0, hold=15.0, tp=12.0, sl=4.0, confirm=2.0, retrace=0.2, order=limit, limit=worse_ticks:2.0
+#7 pnl=-29.92, trades=2, final=-29.92, wr=50.00%, pf=0.33, dd=0.00, params=shock=2.0, tail=0.002, move=4.0, dr=0.8, spread=1.0, hold=8.0, tp=12.0, sl=8.0, confirm=1.0, retrace=0.2, order=opponent, limit=at_close:0.0
+#8 pnl=-29.58, trades=4, final=-29.58, wr=25.00%, pf=0.89, dd=-269.58, params=shock=8.0, tail=0.002, move=2.0, dr=0.65, spread=2.0, hold=30.0, tp=16.0, sl=4.0, confirm=2.0, retrace=0.35, order=limit, limit=worse_ticks:1.0
+#9 pnl=-58.88, trades=8, final=-58.88, wr=37.50%, pf=0.89, dd=-269.04, params=shock=2.0, tail=0.002, move=4.0, dr=0.8, spread=2.0, hold=30.0, tp=12.0, sl=4.0, confirm=2.0, retrace=0.2, order=limit, limit=worse_ticks:1.0
+#10 pnl=-39.32, trades=11, final=-39.32, wr=36.36%, pf=0.96, dd=-734.60, params=shock=2.0, tail=0.002, move=2.0, dr=0.7, spread=2.0, hold=30.0, tp=16.0, sl=8.0, confirm=2.0, retrace=0.5, order=limit, limit=better_ticks:0.0

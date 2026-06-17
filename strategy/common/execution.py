@@ -25,7 +25,7 @@ class ExecutionPolicy:
             return 0.0, ref_price
 
         order_type = cfg.order_type.lower()
-        if order_type == "market":
+        if order_type in {"market", "opponent"}:
             return 0.0, ref_price
 
         if order_type != "limit":
@@ -52,8 +52,16 @@ class ExecutionPolicy:
 
     @staticmethod
     def _reference_price(bar: dict, price_field: str) -> float:
-        price = bar.get(price_field, bar.get("close"))
-        if price is None or pd.isna(price):
-            return 0.0
-        return float(price)
+        candidate_fields = [price_field]
+        for field in ("mid_price", "last_price", "close", "open"):
+            if field not in candidate_fields:
+                candidate_fields.append(field)
 
+        for field in candidate_fields:
+            price = bar.get(field)
+            if price is None or pd.isna(price):
+                continue
+            price = float(price)
+            if price > 0:
+                return price
+        return 0.0

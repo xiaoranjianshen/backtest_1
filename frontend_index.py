@@ -233,6 +233,44 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 activeBtn.classList.remove('text-blue-100', 'hover:bg-white/20');
                 activeBtn.classList.add('bg-white', 'text-[#1e3a8a]', 'font-bold');
                 window.dispatchEvent(new Event('resize')); 
+                if (tabId === 'tab1') setTimeout(setupOverviewXAxisSync, 100);
+            }}
+            let overviewXAxisSyncing = false;
+            function setupOverviewXAxisSync() {{
+                if (!window.Plotly) return;
+                const tab = document.getElementById('tab1');
+                if (!tab) return;
+                const graphs = Array.from(tab.querySelectorAll('.plotly-graph-div'))
+                    .filter(graph => graph.layout && graph.layout.xaxis);
+
+                graphs.forEach(graph => {{
+                    if (graph.dataset.overviewXSyncBound === '1') return;
+                    graph.dataset.overviewXSyncBound = '1';
+
+                    graph.on('plotly_relayout', eventData => {{
+                        if (overviewXAxisSyncing || !eventData) return;
+
+                        const isReset = eventData['xaxis.autorange'] === true;
+                        const rangeStart = eventData['xaxis.range[0]'];
+                        const rangeEnd = eventData['xaxis.range[1]'];
+                        if (!isReset && (rangeStart === undefined || rangeEnd === undefined)) return;
+
+                        const sourceType = (graph.layout.xaxis && graph.layout.xaxis.type) || 'linear';
+                        const update = isReset
+                            ? {{ 'xaxis.autorange': true }}
+                            : {{ 'xaxis.range[0]': rangeStart, 'xaxis.range[1]': rangeEnd, 'xaxis.autorange': false }};
+
+                        overviewXAxisSyncing = true;
+                        const tasks = graphs
+                            .filter(other => other !== graph)
+                            .filter(other => (((other.layout || {{}}).xaxis || {{}}).type || 'linear') === sourceType)
+                            .map(other => Plotly.relayout(other, update).catch(() => null));
+
+                        Promise.all(tasks).finally(() => {{
+                            overviewXAxisSyncing = false;
+                        }});
+                    }});
+                }});
             }}
             function dashboardUrlForOverview(url) {{
                 if (!url) return '';
@@ -245,7 +283,10 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     switchTab('tab1', 'btn-tab1');
                 }}
             }}
-            window.addEventListener('DOMContentLoaded', openTabFromHash);
+            window.addEventListener('DOMContentLoaded', function() {{
+                openTabFromHash();
+                setTimeout(setupOverviewXAxisSync, 700);
+            }});
             window.addEventListener('hashchange', openTabFromHash);
             window.addEventListener('message', function(event) {{
                 if (!event.data || event.data.type !== 'backtest-report-updated') return;
@@ -501,7 +542,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     const {{ jsPDF }} = window.jspdf;
                     const pdf = new jsPDF('p', 'mm', 'a4');
                     const sections = [
-                        {{ title: '产品业绩 (Performance Overview)', tabId: 'tab1', btnId: 'btn-tab1', targetId: 'tab1' }},
+                        {{ title: '策略总览 (Strategy Overview)', tabId: 'tab1', btnId: 'btn-tab1', targetId: 'tab1' }},
                         {{ title: '交易归因 (Trade Attribution)', tabId: 'tab2', btnId: 'btn-tab2', targetId: 'tab2', showAllPeriodReturns: true }},
                         {{ title: '交易复盘 (Trade Replay)', tabId: 'tab3', btnId: 'btn-tab3', targetId: 'report-replay-section', showAllReplay: true }}
                     ];
@@ -539,7 +580,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     </button>
                     <div class="flex space-x-1">
                         <button id="btn-tab-config" onclick="switchTab('tab-config', 'btn-tab-config')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">配置中心 (Configuration)</button>
-                        <button id="btn-tab1" onclick="switchTab('tab1', 'btn-tab1')" class="tab-btn bg-white text-[#1e3a8a] font-bold px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none shadow-[0_-2px_10px_rgba(0,0,0,0.1)]">产品业绩 (Performance Overview)</button>
+                        <button id="btn-tab1" onclick="switchTab('tab1', 'btn-tab1')" class="tab-btn bg-white text-[#1e3a8a] font-bold px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none shadow-[0_-2px_10px_rgba(0,0,0,0.1)]">策略总览 (Strategy Overview)</button>
                         <button id="btn-tab2" onclick="switchTab('tab2', 'btn-tab2')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">交易归因 (Trade Attribution)</button>
                         <button id="btn-tab3" onclick="switchTab('tab3', 'btn-tab3')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">复盘明细 (Replay & Logs)</button>
                     </div>

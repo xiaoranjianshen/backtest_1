@@ -28,16 +28,32 @@ class DataAligner:
             return pd.DataFrame()
 
         # 确保时间戳格式正确并排序
+        raw_df = raw_df.copy()
         raw_df['datetime'] = pd.to_datetime(raw_df['datetime'])
-        raw_df = raw_df.sort_values(by=['datetime', 'symbol']).reset_index(drop=True)
+        is_tick_input = 'last_price' in raw_df.columns or 'ask_price_1' in raw_df.columns
 
-        # ---------------------------------------------------------
-        # Tick 数据可能有重复时间戳（同一时刻多条数据），需要先聚合。
-        # ---------------------------------------------------------
-        if 'last_price' in raw_df.columns or 'ask_price_1' in raw_df.columns:
-            # Tick 数据：取每个时间点的最后一条
-            agg_dict = {col: 'last' for col in raw_df.columns if col not in ['datetime', 'symbol']}
-            raw_df = raw_df.groupby(['datetime', 'symbol'], as_index=False).agg(agg_dict)
+        sort_fields = ['datetime', 'symbol']
+        if is_tick_input and 'volume' in raw_df.columns:
+            sort_fields.append('volume')
+        raw_df = raw_df.sort_values(by=sort_fields).reset_index(drop=True)
+
+        if is_tick_input:
+            # Tick data keeps every quote update. Source volume is cumulative,
+            # so volume_delta is the per-update traded volume.
+            raw_df['is_fresh'] = 1.0
+            if 'volume' in raw_df.columns:
+                cumulative_volume = pd.to_numeric(raw_df['volume'], errors='coerce')
+                volume_delta = cumulative_volume.groupby(raw_df['symbol']).diff()
+                raw_df['volume_delta'] = volume_delta.where(volume_delta >= 0, 0.0).fillna(0.0)
+
+            duplicate_seq = raw_df.groupby(['datetime', 'symbol']).cumcount()
+            if duplicate_seq.gt(0).any():
+                raw_df['datetime'] = raw_df['datetime'] + pd.to_timedelta(duplicate_seq, unit='us')
+        else:
+            # K-line matrices are also forward-filled for alignment. This flag
+            # records whether the row came from the source table or was created
+            # by alignment, so stale bars can be used for valuation but not fills.
+            raw_df['is_fresh'] = 1.0
 
         # ---------------------------------------------------------
         # 步骤 1：并集时间轴提取 (Union Datetime Index)
@@ -93,6 +109,9 @@ class DataAligner:
                 if field in wide_df.columns.levels[0]:
                     wide_df[field] = wide_df[field].fillna(0.0)
 
+            if 'is_fresh' in wide_df.columns.levels[0]:
+                wide_df['is_fresh'] = wide_df['is_fresh'].fillna(0.0)
+
             # 3. 持仓量 (oi) 与复权因子 (adjust_factor) 前值填充
             # 这两个属于存量和连续状态指标，没成交时，延续上一分钟的状态
             state_fields = ['oi', 'adjust_factor']
@@ -119,7 +138,13 @@ class DataAligner:
             # 3. 绝对量与状态量填充
             # 没真实成交时，当笔成交量必须归零
             if 'volume' in wide_df.columns.levels[0]:
-                wide_df['volume'] = wide_df['volume'].fillna(0.0)
+                wide_df['volume'] = wide_df['volume'].ffill().fillna(0.0)
+
+            if 'volume_delta' in wide_df.columns.levels[0]:
+                wide_df['volume_delta'] = wide_df['volume_delta'].fillna(0.0)
+
+            if 'is_fresh' in wide_df.columns.levels[0]:
+                wide_df['is_fresh'] = wide_df['is_fresh'].fillna(0.0)
 
             # 持仓量延续上一笔状态
             if 'oi' in wide_df.columns.levels[0]:

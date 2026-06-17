@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 import webbrowser
 import importlib
 from collections import OrderedDict
@@ -50,6 +51,8 @@ available_strategy_specs = run_config_module.available_strategy_specs
 
 SELECTED_SYMBOLS_KEY = "selected_symbols"
 ACTIVE_CONFIG_SOURCE_MTIME_KEY = "active_config_source_mtime"
+RUN_NOTICE_KEY = "run_notice"
+RUN_LOCK_PATH = UI_DIR / ".runtime" / "backtest_run.lock"
 SECTOR_ORDER = [
     "黑色",
     "有色",
@@ -149,6 +152,62 @@ def _bool_from_config(config: dict, key: str, default: bool) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "on"}
     return bool(value)
+
+
+def _strategy_form_defaults(strategy_key: str, active_config: dict) -> dict:
+    defaults = dict(active_config)
+    if strategy_key == "tick_anomaly_scalping":
+        same_strategy = str(active_config.get("strategy", "")).strip().lower() == strategy_key
+        defaults["freq"] = "tick"
+        defaults["data_type"] = "main"
+        defaults["order_type"] = "opponent"
+        defaults["price_field"] = active_config.get("price_field", "mid_price") if same_strategy else "mid_price"
+        defaults.setdefault("scalp_mode", "reversal")
+        defaults.setdefault("sizing_mode", "fixed_volume")
+        defaults.setdefault("sizing_value", 1.0)
+        defaults.setdefault("min_volume", 1)
+        defaults.setdefault("slippage_ticks", 0.0)
+    if strategy_key == "utbot_stc_hull":
+        defaults["freq"] = "5m"
+        defaults["data_type"] = "main"
+        defaults["order_type"] = "market"
+        defaults["price_field"] = "close"
+        defaults.setdefault("sizing_mode", "fixed_volume")
+        defaults.setdefault("sizing_value", 1.0)
+        defaults.setdefault("min_volume", 1)
+        defaults.setdefault("max_volume", 1)
+        defaults.setdefault("slippage_ticks", 0.5)
+    if strategy_key == "vwap_band_reversion":
+        defaults["freq"] = "5m"
+        defaults["data_type"] = "main"
+        defaults["order_type"] = "market"
+        defaults["price_field"] = "close"
+        defaults.setdefault("sizing_mode", "fixed_volume")
+        defaults.setdefault("sizing_value", 1.0)
+        defaults.setdefault("min_volume", 1)
+        defaults.setdefault("max_volume", 1)
+        defaults.setdefault("slippage_ticks", 0.5)
+    if strategy_key == "donchian_atr_breakout":
+        defaults["freq"] = "5m"
+        defaults["data_type"] = "main"
+        defaults["order_type"] = "market"
+        defaults["price_field"] = "close"
+        defaults.setdefault("sizing_mode", "equity_pct")
+        defaults.setdefault("sizing_value", 0.10)
+        defaults.setdefault("min_volume", 1)
+        defaults.setdefault("max_volume", None)
+        defaults.setdefault("slippage_ticks", 0.5)
+    if strategy_key == "opening_range_acd":
+        defaults["freq"] = "5m"
+        defaults["data_type"] = "main"
+        defaults["order_type"] = "market"
+        defaults["price_field"] = "close"
+        defaults.setdefault("sizing_mode", "equity_pct")
+        defaults.setdefault("sizing_value", 0.10)
+        defaults.setdefault("min_volume", 1)
+        defaults.setdefault("max_volume", None)
+        defaults.setdefault("slippage_ticks", 0.5)
+    return defaults
 
 
 def _parse_symbol_text(value: str) -> list[str]:
@@ -314,6 +373,189 @@ def _parse_dashboard_url(output: str) -> str:
     return ""
 
 
+def _read_run_lock(max_age_seconds: int = 24 * 60 * 60) -> dict:
+    if not RUN_LOCK_PATH.exists():
+        return {}
+    try:
+        age = time.time() - RUN_LOCK_PATH.stat().st_mtime
+    except OSError:
+        return {}
+    if age > max_age_seconds:
+        try:
+            RUN_LOCK_PATH.unlink()
+        except OSError:
+            pass
+        return {}
+    try:
+        data = json.loads(RUN_LOCK_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_run_lock(
+    pid: int,
+    config_path: Path,
+    command: list[str],
+    stdout_path: Path,
+    stderr_path: Path,
+    timeout_seconds: int,
+):
+    RUN_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    RUN_LOCK_PATH.write_text(
+        json.dumps(
+            {
+                "pid": int(pid),
+                "config_path": str(config_path),
+                "command": command,
+                "stdout_path": str(stdout_path),
+                "stderr_path": str(stderr_path),
+                "timeout_seconds": int(timeout_seconds),
+                "started_at_epoch": time.time(),
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _clear_run_lock(pid: int | None = None):
+    if not RUN_LOCK_PATH.exists():
+        return
+    if pid is not None:
+        lock = _read_run_lock()
+        if lock and int(lock.get("pid", -1)) != int(pid):
+            return
+    try:
+        RUN_LOCK_PATH.unlink()
+    except OSError:
+        pass
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        return result.returncode == 0 and str(pid) in (result.stdout or "")
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _run_output_paths(config_path: Path) -> tuple[Path, Path]:
+    stem = config_path.with_suffix("")
+    return (
+        stem.with_name(stem.name + "_stdout.log"),
+        stem.with_name(stem.name + "_stderr.log"),
+    )
+
+
+def _read_run_output(lock: dict) -> str:
+    chunks = []
+    for key in ("stdout_path", "stderr_path"):
+        path_text = lock.get(key)
+        if not path_text:
+            continue
+        path = Path(path_text)
+        if path.exists():
+            try:
+                chunks.append(path.read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+    return "\n".join(chunks)
+
+
+def _stop_locked_backtest(lock: dict) -> tuple[bool, str]:
+    try:
+        pid = int(lock.get("pid", 0))
+    except (TypeError, ValueError):
+        _clear_run_lock()
+        return False, "运行锁中的 PID 无效，已清理运行锁。"
+
+    if pid <= 0:
+        _clear_run_lock()
+        return False, "运行锁中的 PID 无效，已清理运行锁。"
+
+    if not _pid_is_running(pid):
+        _clear_run_lock(pid)
+        return True, f"回测进程 PID={pid} 已不存在，已清理运行锁。"
+
+    if os.name == "nt":
+        result = subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+        if result.returncode != 0:
+            return False, f"停止失败，PID={pid}。{output}"
+    else:
+        try:
+            os.kill(pid, 15)
+        except OSError as exc:
+            return False, f"停止失败，PID={pid}。{exc}"
+
+    _clear_run_lock(pid)
+    return True, f"已停止当前回测进程，PID={pid}。"
+
+
+def _finish_completed_run(lock: dict) -> str:
+    output = _read_run_output(lock)
+    if output:
+        st.session_state["last_run_output"] = output[-12000:]
+    try:
+        pid = int(lock.get("pid", 0))
+    except (TypeError, ValueError):
+        pid = None
+    _clear_run_lock(pid)
+    return _parse_dashboard_url(output)
+
+
+def _start_backtest(dm: BacktestDataManager, config: dict, timeout_seconds: int) -> tuple[bool, str]:
+    existing_lock = _read_run_lock()
+    if existing_lock:
+        return False, f"已有回测进程正在运行，PID={existing_lock.get('pid', '-')}。"
+
+    dm.write_active_config(config)
+    config_path = dm.write_config(config)
+    command = dm.config_command(config_path)
+    stdout_path, stderr_path = _run_output_paths(config_path)
+
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    stdout = open(stdout_path, "w", encoding="utf-8", errors="replace")
+    stderr = open(stderr_path, "w", encoding="utf-8", errors="replace")
+    try:
+        proc = subprocess.Popen(
+            command,
+            cwd=str(PROJECT_ROOT),
+            stdout=stdout,
+            stderr=stderr,
+            env=env,
+        )
+    finally:
+        stdout.close()
+        stderr.close()
+
+    _write_run_lock(proc.pid, config_path, command, stdout_path, stderr_path, timeout_seconds)
+    return True, f"回测已启动，PID={proc.pid}。运行期间可以刷新状态或停止当前回测。"
+
+
 def _post_report_update(url: str):
     if not url:
         return
@@ -332,38 +574,77 @@ def _post_report_update(url: str):
     )
 
 
-def _run_backtest(dm: BacktestDataManager, config: dict, timeout_seconds: int):
-    dm.write_active_config(config)
-    config_path = dm.write_config(config)
-    command = dm.config_command(config_path)
-    env = os.environ.copy()
-    env["PYTHONUTF8"] = "1"
-    env["PYTHONIOENCODING"] = "utf-8"
+def _start_hidden_run_status_poll(interval_seconds: int = 3):
+    """Poll run status in a hidden iframe so the visible configuration page stays stable."""
+    interval_ms = max(1, int(interval_seconds)) * 1000
+    components.html(
+        f"""
+        <script>
+            window.setTimeout(() => {{
+                let baseUrl = 'http://localhost:8501/?embed=1';
+                try {{
+                    const parentUrl = new URL(window.parent.location.href);
+                    if (parentUrl.protocol === 'http:' || parentUrl.protocol === 'https:') {{
+                        baseUrl = parentUrl.origin + parentUrl.pathname + '?embed=1';
+                    }}
+                }} catch (error) {{
+                    baseUrl = 'http://localhost:8501/?embed=1';
+                }}
+                const url = new URL(baseUrl);
+                url.searchParams.set('poll', '1');
+                url.searchParams.set('ts', Date.now().toString());
+                const frame = document.createElement('iframe');
+                frame.src = url.toString();
+                frame.style.display = 'none';
+                frame.style.width = '0';
+                frame.style.height = '0';
+                frame.style.border = '0';
+                frame.setAttribute('aria-hidden', 'true');
+                document.body.appendChild(frame);
+            }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+    )
 
-    timeout = timeout_seconds if timeout_seconds > 0 else None
-    with st.status("正在运行回测...", expanded=False) as status:
-        st.write("正在调用回测引擎，完成后会生成最新 HTML 报告。")
-        proc = subprocess.run(
-            command,
-            cwd=str(PROJECT_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            timeout=timeout,
-        )
-        output = (proc.stdout or "") + "\n" + (proc.stderr or "")
-        st.session_state["last_run_output"] = output[-12000:]
 
-        if proc.returncode != 0:
-            status.update(label="回测失败", state="error")
-            st.error(f"回测进程退出码: {proc.returncode}")
-            return ""
+def _schedule_hidden_poll_reload(interval_seconds: int = 3):
+    """Reload only the hidden polling iframe while the backtest process is alive."""
+    interval_ms = max(1, int(interval_seconds)) * 1000
+    components.html(
+        f"""
+        <script>
+            window.setTimeout(() => {{
+                try {{
+                    window.parent.location.reload();
+                }} catch (error) {{
+                    window.location.reload();
+                }}
+            }}, {interval_ms});
+        </script>
+        """,
+        height=0,
+    )
 
-        dashboard_url = _parse_dashboard_url(proc.stdout or "")
-        status.update(label="回测完成", state="complete")
-        return dashboard_url
+
+def _render_poll_response():
+    """Minimal hidden-frame endpoint used to detect background backtest completion."""
+    running_lock = _read_run_lock()
+    if not running_lock:
+        return
+
+    try:
+        running_pid = int(running_lock.get("pid", 0))
+    except (TypeError, ValueError):
+        running_pid = 0
+
+    if _pid_is_running(running_pid):
+        _schedule_hidden_poll_reload(3)
+        return
+
+    dashboard_url = _finish_completed_run(running_lock)
+    if dashboard_url:
+        _post_report_update(dashboard_url)
 
 
 def _market_fields(active_config: dict):
@@ -384,7 +665,7 @@ def _market_fields(active_config: dict):
         index=_option_index(freq_options, active_config.get("freq", "1d")),
         format_func=format_with_mapping(FREQ_LABELS),
     )
-    data_type_options = ["main", "main_adj", "index", "all"]
+    data_type_options = ["main"] if freq == "tick" else ["main", "main_adj", "index", "all"]
     data_type = data_col.selectbox(
         "数据类型",
         data_type_options,
@@ -410,7 +691,7 @@ def _market_fields(active_config: dict):
     }
 
 
-def _general_signal_fields(active_config: dict):
+def _general_signal_fields(active_config: dict, freq: str | None = None):
     st.markdown("#### 仓位规则 (Sizing)")
     size_1, size_2, size_3, size_4 = st.columns(4)
     sizing_options = list(SIZING_LABELS)
@@ -429,14 +710,18 @@ def _general_signal_fields(active_config: dict):
 
     st.markdown("#### 执行规则 (Execution)")
     exe_1, exe_2, exe_3, exe_4 = st.columns(4)
-    order_type_options = ["market", "limit"]
+    is_tick_freq = str(freq or active_config.get("freq", "1d")).lower() == "tick"
+    order_type_options = ["market", "opponent", "limit"] if is_tick_freq else ["market", "limit"]
     order_type = exe_1.selectbox(
         "订单类型",
         order_type_options,
         index=_option_index(order_type_options, active_config.get("order_type", "market")),
         format_func=format_with_mapping(ORDER_TYPE_LABELS),
     )
-    price_field_options = ["close", "open", "high", "low"]
+    if is_tick_freq:
+        price_field_options = ["close", "last_price", "mid_price", "bid_price_1", "ask_price_1"]
+    else:
+        price_field_options = ["close", "open", "high", "low"]
     price_field = exe_2.selectbox(
         "参考价格",
         price_field_options,
@@ -580,6 +865,476 @@ def _strategy_parameter_fields(strategy_key: str, active_config: dict):
             )),
         }
 
+    if strategy_key == "tick_anomaly_scalping":
+        mode_options = ["reversal", "fade", "follow", "fade_after_pause"]
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        return {
+            "scalp_mode": col_1.selectbox(
+                "Mode",
+                mode_options,
+                index=_option_index(mode_options, active_config.get("scalp_mode", "reversal")),
+            ),
+            "shock_window_seconds": float(col_2.number_input(
+                "Shock Window Seconds",
+                min_value=0.5,
+                value=float(active_config.get("shock_window_seconds", 3.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "lookback_days": float(col_3.number_input(
+                "Lookback Days",
+                min_value=0.1,
+                value=float(active_config.get("lookback_days", 10.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "tail_prob": float(col_4.number_input(
+                "Tail Probability",
+                min_value=0.0001,
+                max_value=0.2,
+                value=float(active_config.get("tail_prob", 0.001)),
+                step=0.0005,
+                format="%.4f",
+            )),
+            "min_move_bps": float(col_5.number_input(
+                "Min Move Bps",
+                min_value=0.0,
+                value=float(active_config.get("min_move_bps", 4.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "hold_seconds": float(col_6.number_input(
+                "Hold Seconds",
+                min_value=0.1,
+                value=float(active_config.get("hold_seconds", 20.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "take_profit_ticks": float(col_7.number_input(
+                "Take Profit Ticks",
+                min_value=0.0,
+                value=float(active_config.get("take_profit_ticks", 8.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "stop_loss_ticks": float(col_8.number_input(
+                "Stop Loss Ticks",
+                min_value=0.0,
+                value=float(active_config.get("stop_loss_ticks", 5.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "reversal_confirm_seconds": float(col_9.number_input(
+                "Confirm Seconds",
+                min_value=0.1,
+                value=float(active_config.get("reversal_confirm_seconds", 1.5)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "reversal_retrace_ratio": float(col_10.number_input(
+                "Retrace Ratio",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(active_config.get("reversal_retrace_ratio", 0.4)),
+                step=0.05,
+                format="%.2f",
+            )),
+            "warmup_days": float(col_11.number_input(
+                "Warmup Days",
+                min_value=0.0,
+                value=float(active_config.get("warmup_days", 10.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "min_history_samples": int(col_12.number_input(
+                "Min Samples",
+                min_value=0,
+                value=int(active_config.get("min_history_samples", 5000)),
+                step=500,
+            )),
+        }
+
+    if strategy_key == "utbot_stc_hull":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        col_13, col_14, col_15 = st.columns(3)
+        return {
+            "hma_length": int(col_1.number_input(
+                "HMA Length",
+                min_value=2,
+                value=int(active_config.get("hma_length", 55)),
+                step=1,
+            )),
+            "atr_period": int(col_2.number_input(
+                "UT ATR Period",
+                min_value=1,
+                value=int(active_config.get("atr_period", 10)),
+                step=1,
+            )),
+            "ut_key_value": float(col_3.number_input(
+                "UT Key Value",
+                min_value=0.1,
+                value=float(active_config.get("ut_key_value", 1.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "stc_length": int(col_4.number_input(
+                "STC Length",
+                min_value=1,
+                value=int(active_config.get("stc_length", 12)),
+                step=1,
+            )),
+            "stc_fast": int(col_5.number_input(
+                "STC Fast",
+                min_value=1,
+                value=int(active_config.get("stc_fast", 26)),
+                step=1,
+            )),
+            "stc_slow": int(col_6.number_input(
+                "STC Slow",
+                min_value=1,
+                value=int(active_config.get("stc_slow", 50)),
+                step=1,
+            )),
+            "stc_factor": float(col_7.number_input(
+                "STC Factor",
+                min_value=0.01,
+                max_value=1.0,
+                value=float(active_config.get("stc_factor", 0.5)),
+                step=0.05,
+                format="%.2f",
+            )),
+            "stc_long_max": float(col_8.number_input(
+                "STC Long Max",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(active_config.get("stc_long_max", 35.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "stc_short_min": float(col_9.number_input(
+                "STC Short Min",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(active_config.get("stc_short_min", 65.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "take_profit_ticks": float(col_10.number_input(
+                "Take Profit Ticks",
+                min_value=0.0,
+                value=float(active_config.get("take_profit_ticks", 24.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "stop_loss_ticks": float(col_11.number_input(
+                "Stop Loss Ticks",
+                min_value=0.0,
+                value=float(active_config.get("stop_loss_ticks", 16.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "max_hold_bars": int(col_12.number_input(
+                "Max Hold Bars",
+                min_value=1,
+                value=int(active_config.get("max_hold_bars", 36)),
+                step=1,
+            )),
+            "cooldown_bars": int(col_13.number_input(
+                "Cooldown Bars",
+                min_value=0,
+                value=int(active_config.get("cooldown_bars", 3)),
+                step=1,
+            )),
+            "max_entries_per_symbol_per_day": int(col_14.number_input(
+                "Max Entries/Day",
+                min_value=1,
+                value=int(active_config.get("max_entries_per_symbol_per_day", 20)),
+                step=1,
+            )),
+            "require_price_above_hull": bool(st.checkbox(
+                "Require price on Hull side",
+                value=_bool_from_config(active_config, "require_price_above_hull", True),
+            )),
+            "exit_on_opposite_signal": bool(st.checkbox(
+                "Exit on opposite signal",
+                value=_bool_from_config(active_config, "exit_on_opposite_signal", True),
+            )),
+        }
+
+    if strategy_key == "vwap_band_reversion":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        col_13 = st.columns(1)[0]
+        return {
+            "std_window": int(col_1.number_input(
+                "Std Window",
+                min_value=3,
+                value=int(active_config.get("std_window", 48)),
+                step=1,
+            )),
+            "entry_z": float(col_2.number_input(
+                "Entry Z",
+                min_value=0.1,
+                value=float(active_config.get("entry_z", 2.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "exit_z": float(col_3.number_input(
+                "Exit Z",
+                min_value=0.0,
+                value=float(active_config.get("exit_z", 0.25)),
+                step=0.05,
+                format="%.2f",
+            )),
+            "min_bars_in_session": int(col_4.number_input(
+                "Min Session Bars",
+                min_value=1,
+                value=int(active_config.get("min_bars_in_session", 12)),
+                step=1,
+            )),
+            "min_std_ticks": float(col_5.number_input(
+                "Min Std Ticks",
+                min_value=0.0,
+                value=float(active_config.get("min_std_ticks", 4.0)),
+                step=0.5,
+                format="%.1f",
+            )),
+            "max_vwap_slope_ticks": float(col_6.number_input(
+                "Max VWAP Slope Ticks",
+                min_value=0.0,
+                value=float(active_config.get("max_vwap_slope_ticks", 6.0)),
+                step=0.5,
+                format="%.1f",
+            )),
+            "slope_window": int(col_7.number_input(
+                "Slope Window",
+                min_value=1,
+                value=int(active_config.get("slope_window", 6)),
+                step=1,
+            )),
+            "take_profit_ticks": float(col_8.number_input(
+                "Take Profit Ticks",
+                min_value=0.0,
+                value=float(active_config.get("take_profit_ticks", 28.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "stop_loss_ticks": float(col_9.number_input(
+                "Stop Loss Ticks",
+                min_value=0.0,
+                value=float(active_config.get("stop_loss_ticks", 18.0)),
+                step=1.0,
+                format="%.1f",
+            )),
+            "max_hold_bars": int(col_10.number_input(
+                "Max Hold Bars",
+                min_value=1,
+                value=int(active_config.get("max_hold_bars", 24)),
+                step=1,
+            )),
+            "cooldown_bars": int(col_11.number_input(
+                "Cooldown Bars",
+                min_value=0,
+                value=int(active_config.get("cooldown_bars", 3)),
+                step=1,
+            )),
+            "max_entries_per_symbol_per_day": int(col_12.number_input(
+                "Max Entries/Day",
+                min_value=1,
+                value=int(active_config.get("max_entries_per_symbol_per_day", 20)),
+                step=1,
+            )),
+            "session_start_hour": int(col_13.number_input(
+                "Session Start Hour",
+                min_value=0,
+                max_value=23,
+                value=int(active_config.get("session_start_hour", 21)),
+                step=1,
+            )),
+        }
+
+    if strategy_key == "donchian_atr_breakout":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        return {
+            "donchian_window": int(col_1.number_input(
+                "Donchian Window",
+                min_value=2,
+                value=int(active_config.get("donchian_window", 144)),
+                step=1,
+            )),
+            "atr_period": int(col_2.number_input(
+                "ATR Period",
+                min_value=2,
+                value=int(active_config.get("atr_period", 72)),
+                step=1,
+            )),
+            "trend_window": int(col_3.number_input(
+                "Trend EMA Window",
+                min_value=2,
+                value=int(active_config.get("trend_window", 240)),
+                step=1,
+            )),
+            "breakout_buffer_ticks": float(col_4.number_input(
+                "Breakout Buffer Ticks",
+                min_value=0.0,
+                value=float(active_config.get("breakout_buffer_ticks", 2.0)),
+                step=0.5,
+                format="%.1f",
+            )),
+            "min_channel_atr": float(col_5.number_input(
+                "Min Channel ATR",
+                min_value=0.0,
+                value=float(active_config.get("min_channel_atr", 1.8)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "max_extension_atr": float(col_6.number_input(
+                "Max Extension ATR",
+                min_value=0.1,
+                value=float(active_config.get("max_extension_atr", 1.5)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "atr_stop_mult": float(col_7.number_input(
+                "ATR Stop Mult",
+                min_value=0.1,
+                value=float(active_config.get("atr_stop_mult", 3.2)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "max_hold_bars": int(col_8.number_input(
+                "Max Hold Bars",
+                min_value=1,
+                value=int(active_config.get("max_hold_bars", 384)),
+                step=1,
+            )),
+            "cooldown_bars": int(col_9.number_input(
+                "Cooldown Bars",
+                min_value=0,
+                value=int(active_config.get("cooldown_bars", 18)),
+                step=1,
+            )),
+            "max_entries_per_symbol_per_day": int(col_10.number_input(
+                "Max Entries/Day",
+                min_value=1,
+                value=int(active_config.get("max_entries_per_symbol_per_day", 3)),
+                step=1,
+            )),
+            "allowed_entry_hours": str(col_11.text_input(
+                "Allowed Entry Hours",
+                value=str(active_config.get("allowed_entry_hours", "9,10,13,21,22,23,0,1,2")),
+            )),
+            "exit_on_midline": bool(col_12.checkbox(
+                "Exit on Midline",
+                value=_bool_from_config(active_config, "exit_on_midline", True),
+            )),
+        }
+
+    if strategy_key == "opening_range_acd":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        col_13, col_14 = st.columns(2)
+        return {
+            "opening_range_bars": int(col_1.number_input(
+                "Opening Range Bars",
+                min_value=1,
+                value=int(active_config.get("opening_range_bars", 3)),
+                step=1,
+            )),
+            "atr_period": int(col_2.number_input(
+                "ATR Period",
+                min_value=2,
+                value=int(active_config.get("atr_period", 48)),
+                step=1,
+            )),
+            "trend_window": int(col_3.number_input(
+                "Trend EMA Window",
+                min_value=2,
+                value=int(active_config.get("trend_window", 144)),
+                step=1,
+            )),
+            "breakout_buffer_ticks": float(col_4.number_input(
+                "Breakout Buffer Ticks",
+                min_value=0.0,
+                value=float(active_config.get("breakout_buffer_ticks", 1.0)),
+                step=0.5,
+                format="%.1f",
+            )),
+            "min_range_atr": float(col_5.number_input(
+                "Min Range ATR",
+                min_value=0.0,
+                value=float(active_config.get("min_range_atr", 0.5)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "max_extension_atr": float(col_6.number_input(
+                "Max Extension ATR",
+                min_value=0.1,
+                value=float(active_config.get("max_extension_atr", 1.2)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "atr_stop_mult": float(col_7.number_input(
+                "ATR Stop Mult",
+                min_value=0.1,
+                value=float(active_config.get("atr_stop_mult", 3.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "trail_atr_mult": float(col_8.number_input(
+                "Trail ATR Mult",
+                min_value=0.1,
+                value=float(active_config.get("trail_atr_mult", 4.0)),
+                step=0.1,
+                format="%.2f",
+            )),
+            "take_profit_atr": float(col_9.number_input(
+                "Take Profit ATR (0=off)",
+                min_value=0.0,
+                value=float(active_config.get("take_profit_atr", 0.0)),
+                step=0.5,
+                format="%.2f",
+            )),
+            "max_hold_bars": int(col_10.number_input(
+                "Max Hold Bars",
+                min_value=1,
+                value=int(active_config.get("max_hold_bars", 384)),
+                step=1,
+            )),
+            "cooldown_bars": int(col_11.number_input(
+                "Cooldown Bars",
+                min_value=0,
+                value=int(active_config.get("cooldown_bars", 18)),
+                step=1,
+            )),
+            "max_entries_per_symbol_per_day": int(col_12.number_input(
+                "Max Entries/Day",
+                min_value=1,
+                value=int(active_config.get("max_entries_per_symbol_per_day", 2)),
+                step=1,
+            )),
+            "session_start_hours": str(col_13.text_input(
+                "Session Start Hours",
+                value=str(active_config.get("session_start_hours", "9,21")),
+            )),
+            "allowed_entry_hours": str(col_14.text_input(
+                "Allowed Entry Hours",
+                value=str(active_config.get("allowed_entry_hours", "9,10,21,22,23,0,1")),
+            )),
+            "exit_on_range_reentry": bool(st.checkbox(
+                "Exit on Range Re-entry",
+                value=_bool_from_config(active_config, "exit_on_range_reentry", False),
+            )),
+        }
+
     if strategy_key in {"composite_factor", "cross_momentum"}:
         col_1, col_2, col_3 = st.columns(3)
         return {
@@ -616,7 +1371,7 @@ def _guide():
 - 推荐新策略继承 `GeneralSignalStrategy`，策略只负责输出方向或目标仓位信号。
 - 策略输出统一使用 `signal intent`：`signal` 表示方向，`position_mode` 表示目标仓位、增减仓或全平。
 - 仓位由 `sizing` 控制：固定手数、固定保证金、固定名义金额、初始资金比例、当前权益比例、可用资金比例。
-- 执行由 `execution` 控制：市价单使用 `slippage_ticks`，限价单使用 `limit_mode` 和 `ticks`。
+- 执行由 `execution` 控制：市价单使用 `slippage_ticks`，Tick 对价单吃对手盘，限价单使用 `limit_mode` 和 `ticks`。
 - 平仓由 `exit` 控制：`close_pct` 决定普通退出信号下平掉多少比例，策略也可以在高级信号里指定 `close_volume`。
 - 新策略接入配置页时，优先编辑 `ui/run_from_config.py` 的 `STRATEGY_SPECS` 和对应 builder。
         """
@@ -624,6 +1379,10 @@ def _guide():
 
 
 def main():
+    if _query_flag("poll"):
+        _render_poll_response()
+        return
+
     dm = BacktestDataManager()
     _, active_config = _load_active_config()
     if not _is_embedded():
@@ -644,6 +1403,17 @@ def main():
 
     config_tab, guide_tab = st.tabs(["参数配置 (Configuration)", "策略说明 (Guide)"])
     with config_tab:
+        notice = st.session_state.pop(RUN_NOTICE_KEY, None)
+        if isinstance(notice, dict):
+            level = notice.get("level")
+            message = notice.get("message", "")
+            if level == "success":
+                st.success(message)
+            elif level == "error":
+                st.error(message)
+            else:
+                st.info(message)
+
         strategy_keys = [item["key"] for item in available]
         active_strategy = str(active_config.get("strategy", "general_multi_ma")).strip().lower()
         if active_strategy not in strategy_keys:
@@ -657,12 +1427,14 @@ def main():
             format_func=_strategy_label,
         )
 
+        form_active_config = _strategy_form_defaults(strategy_key, active_config)
+
         config = {
             "strategy": strategy_key,
-            **_market_fields(active_config),
+            **_market_fields(form_active_config),
         }
-        config.update(_strategy_parameter_fields(strategy_key, active_config))
-        config.update(_general_signal_fields(active_config))
+        config.update(_strategy_parameter_fields(strategy_key, form_active_config))
+        config.update(_general_signal_fields(form_active_config, config.get("freq")))
 
         col_1, col_2 = st.columns([1, 3])
         enable_main_rollover = col_1.checkbox(
@@ -673,11 +1445,56 @@ def main():
         config["enable_main_rollover"] = bool(enable_main_rollover)
 
         can_run = bool(config["symbols"])
+        running_lock = _read_run_lock()
+        if running_lock:
+            try:
+                running_pid = int(running_lock.get("pid", 0))
+            except (TypeError, ValueError):
+                running_pid = 0
+            if not _pid_is_running(running_pid):
+                dashboard_url = _finish_completed_run(running_lock)
+                running_lock = {}
+                if dashboard_url:
+                    st.success("回测完成，报告已生成。")
+                    st.markdown(f"[打开最新报告]({dashboard_url})")
+                    _post_report_update(dashboard_url)
+                else:
+                    st.warning("回测进程已结束，但未获取到报告路径。请查看最近一次运行输出。")
+            else:
+                _start_hidden_run_status_poll(3)
+                timeout_limit = int(running_lock.get("timeout_seconds") or 0)
+                started_at = float(running_lock.get("started_at_epoch") or 0.0)
+                if timeout_limit > 0 and started_at > 0 and time.time() - started_at > timeout_limit:
+                    ok, message = _stop_locked_backtest(running_lock)
+                    running_lock = {}
+                    if ok:
+                        st.error(f"回测超过 {timeout_limit} 秒，已自动停止。{message}")
+                    else:
+                        st.error(f"回测超过 {timeout_limit} 秒，但自动停止失败。{message}")
+
+        if config.get("freq") == "tick" and len(config.get("symbols", [])) > 2:
+            st.warning(
+                f"Tick 回测当前选择了 {len(config.get('symbols', []))} 个品种，"
+                "可以运行，但耗时会明显变长。运行期间请不要重复点击按钮。"
+            )
+        if running_lock:
+            st.warning(f"已有回测进程正在运行，PID={running_lock.get('pid', '-')}。")
+            run_col_1, run_col_2 = st.columns([1, 1])
+            if run_col_1.button("刷新运行状态", use_container_width=True):
+                st.rerun()
+            if run_col_2.button("停止当前回测", use_container_width=True):
+                ok, message = _stop_locked_backtest(running_lock)
+                st.session_state[RUN_NOTICE_KEY] = {
+                    "level": "success" if ok else "error",
+                    "message": message,
+                }
+                st.rerun()
+
         submitted = st.button(
             "按当前参数运行回测",
             type="primary",
             use_container_width=True,
-            disabled=not can_run,
+            disabled=(not can_run) or bool(running_lock),
         )
 
         if not can_run:
@@ -685,15 +1502,12 @@ def main():
 
         if submitted:
             try:
-                dashboard_url = _run_backtest(dm, config, timeout_seconds)
-                if dashboard_url:
-                    st.success("回测完成，报告已生成。")
-                    st.markdown(f"[打开最新报告]({dashboard_url})")
-                    _post_report_update(dashboard_url)
+                ok, message = _start_backtest(dm, config, timeout_seconds)
+                if ok:
+                    st.session_state[RUN_NOTICE_KEY] = {"level": "success", "message": message}
+                    st.rerun()
                 else:
-                    st.warning("回测完成但未获取到报告路径，请查看运行输出。")
-            except subprocess.TimeoutExpired:
-                st.error("回测超时，进程已终止。可增大超时秒数或设置为 0。")
+                    st.error(message)
             except Exception as exc:
                 st.error(f"运行失败: {exc}")
 

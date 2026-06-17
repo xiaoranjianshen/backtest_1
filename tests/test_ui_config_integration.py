@@ -76,6 +76,53 @@ class UiConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(args["strategy_kwargs"]["entry_z"], 2.1)
         self.assertEqual(args["strategy_kwargs"]["sizing"]["mode"], "available_pct")
 
+    def test_opponent_order_type_requires_tick_frequency(self):
+        with self.assertRaisesRegex(ValueError, "only supported for tick"):
+            build_run_arguments({
+                "strategy": "general_multi_ma",
+                "symbols": "rb,hc",
+                "freq": "1d",
+                "data_type": "main",
+                "order_type": "opponent",
+            })
+
+    def test_tick_opponent_order_type_is_allowed(self):
+        args = build_run_arguments({
+            "strategy": "general_multi_ma",
+            "symbols": "rb,hc",
+            "freq": "tick",
+            "data_type": "main",
+            "order_type": "opponent",
+            "price_field": "mid_price",
+        })
+
+        self.assertEqual(args["strategy_kwargs"]["execution"]["order_type"], "opponent")
+        self.assertEqual(args["strategy_kwargs"]["execution"]["price_field"], "mid_price")
+
+    def test_tick_anomaly_scalping_forces_tick_data_but_respects_execution_config(self):
+        args = build_run_arguments({
+            "strategy": "tick_anomaly_scalping",
+            "symbols": "au",
+            "freq": "1d",
+            "data_type": "main",
+            "order_type": "limit",
+            "price_field": "last_price",
+            "limit_mode": "better_ticks",
+            "limit_ticks": 2.0,
+            "scalp_mode": "follow",
+        })
+
+        self.assertEqual(args["strategy_class"].__module__, "strategy.custom.tick_anomaly_scalping")
+        self.assertEqual(args["strategy_class"].__name__, "TickAnomalyScalpingStrategy")
+        self.assertEqual(args["symbols_input"], ["au"])
+        self.assertEqual(args["freq"], "tick")
+        self.assertEqual(args["data_type"], "main")
+        self.assertEqual(args["strategy_kwargs"]["scalp_mode"], "follow")
+        self.assertEqual(args["strategy_kwargs"]["execution"]["order_type"], "limit")
+        self.assertEqual(args["strategy_kwargs"]["execution"]["price_field"], "last_price")
+        self.assertEqual(args["strategy_kwargs"]["execution"]["limit_mode"], "better_ticks")
+        self.assertEqual(args["strategy_kwargs"]["execution"]["ticks"], 2.0)
+
 
 if __name__ == "__main__":
     unittest.main()

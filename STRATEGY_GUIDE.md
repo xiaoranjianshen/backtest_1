@@ -263,6 +263,15 @@ return {
 }
 ```
 
+Tick 对价单示例：
+
+```python
+"execution": {
+    "order_type": "opponent",
+    "price_field": "mid_price",
+}
+```
+
 限价单示例：
 
 ```python

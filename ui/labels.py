@@ -26,6 +26,7 @@ SIZING_LABELS = {
 
 ORDER_TYPE_LABELS = {
     "market": "市价单 (Market)",
+    "opponent": "对价单 (Opponent)",
     "limit": "限价单 (Limit)",
 }
 

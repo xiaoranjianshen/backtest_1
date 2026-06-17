@@ -24,9 +24,22 @@ STRATEGY_CLASS_TO_CONFIG_KEY = {
     "BreakoutPyramidStrategy": "breakout_pyramid",
     "DualMAStrategy": "dual_ma",
     "ZScoreReversalStrategy": "zscore_reversal",
+    "TickAnomalyScalpingStrategy": "tick_anomaly_scalping",
+    "TickRollingBreakoutStrategy": "tick_rolling_breakout",
+    "TickVWAPReversionStrategy": "tick_vwap_reversion",
+    "UTBotSTCHullStrategy": "utbot_stc_hull",
+    "VWAPBandReversionStrategy": "vwap_band_reversion",
+    "DonchianATRBreakoutStrategy": "donchian_atr_breakout",
+    "OpeningRangeACDStrategy": "opening_range_acd",
+    "AmplitudeRankACDStrategy": "amplitude_rank_acd",
     "CompositeFactorStrategy": "composite_factor",
     "CrossMomentumFactor": "cross_momentum",
 }
+
+
+def _row_value(row, field: str, symbol: str, default=pd.NA):
+    key = (field, symbol)
+    return row[key] if key in row else default
 
 
 def extract_bar_data(row, columns_level_1):
@@ -41,24 +54,99 @@ def extract_bar_data(row, columns_level_1):
 
         if ('close', full_sym) in row and not pd.isna(row[('close', full_sym)]):
             bar_data[raw_code]['close'] = row[('close', full_sym)]
-            bar_data[raw_code]['open'] = row[('open', full_sym)] if ('open', full_sym) in row else bar_data[raw_code]['close']
-            bar_data[raw_code]['high'] = row[('high', full_sym)] if ('high', full_sym) in row else bar_data[raw_code]['close']
-            bar_data[raw_code]['low'] = row[('low', full_sym)] if ('low', full_sym) in row else bar_data[raw_code]['close']
+            bar_data[raw_code]['open'] = _row_value(row, 'open', full_sym, bar_data[raw_code]['close'])
+            bar_data[raw_code]['high'] = _row_value(row, 'high', full_sym, bar_data[raw_code]['close'])
+            bar_data[raw_code]['low'] = _row_value(row, 'low', full_sym, bar_data[raw_code]['close'])
+            bar_data[raw_code]['volume'] = _row_value(row, 'volume', full_sym, 0.0)
+            bar_data[raw_code]['oi'] = _row_value(row, 'oi', full_sym, pd.NA)
+            bar_data[raw_code]['is_fresh'] = bool(_row_value(row, 'is_fresh', full_sym, 1.0))
             if ('month_change', full_sym) in row:
                 bar_data[raw_code]['month_change'] = row[('month_change', full_sym)]
         elif ('last_price', full_sym) in row and not pd.isna(row[('last_price', full_sym)]):
             price = row[('last_price', full_sym)]
+            bid = _row_value(row, 'bid_price_1', full_sym, price)
+            ask = _row_value(row, 'ask_price_1', full_sym, price)
+            bid_volume = _row_value(row, 'bid_volume_1', full_sym, 0.0)
+            ask_volume = _row_value(row, 'ask_volume_1', full_sym, 0.0)
+            tick_volume = _row_value(row, 'volume_delta', full_sym, 0.0)
             bar_data[raw_code]['close'] = price
             bar_data[raw_code]['open'] = price
             bar_data[raw_code]['high'] = price
             bar_data[raw_code]['low'] = price
-            bar_data[raw_code]['bid_price_1'] = row[('bid_price_1', full_sym)] if ('bid_price_1', full_sym) in row else price
-            bar_data[raw_code]['ask_price_1'] = row[('ask_price_1', full_sym)] if ('ask_price_1', full_sym) in row else price
+            bar_data[raw_code]['last_price'] = price
+            bar_data[raw_code]['bid_price_1'] = bid
+            bar_data[raw_code]['ask_price_1'] = ask
+            bar_data[raw_code]['bid_volume_1'] = bid_volume
+            bar_data[raw_code]['ask_volume_1'] = ask_volume
+            bar_data[raw_code]['volume'] = tick_volume
+            bar_data[raw_code]['tick_volume'] = tick_volume
+            bar_data[raw_code]['cum_volume'] = _row_value(row, 'volume', full_sym, 0.0)
+            bar_data[raw_code]['oi'] = _row_value(row, 'oi', full_sym, pd.NA)
+            bar_data[raw_code]['is_fresh'] = bool(_row_value(row, 'is_fresh', full_sym, 1.0))
+            if not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask > 0:
+                bar_data[raw_code]['mid_price'] = (float(bid) + float(ask)) / 2.0
+                bar_data[raw_code]['spread'] = float(ask) - float(bid)
+            else:
+                bar_data[raw_code]['mid_price'] = price
+                bar_data[raw_code]['spread'] = 0.0
         else:
             bar_data[raw_code]['close'] = pd.NA
 
         if 'month_change' not in bar_data[raw_code]:
             bar_data[raw_code]['month_change'] = 0
+
+    return bar_data
+
+
+def _tuple_value(row_values, col_pos: dict, field: str, symbol: str, default=pd.NA):
+    pos = col_pos.get((field, symbol))
+    return row_values[pos] if pos is not None else default
+
+
+def extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos: dict):
+    """Build tick bar_data from an itertuples row without changing event order."""
+    bar_data = {}
+    for full_sym in columns_level_1:
+        match = re.search(r'\((.*?)\)', full_sym)
+        if not match:
+            continue
+
+        raw_code = match.group(1).lower()
+        price = _tuple_value(row_values, col_pos, 'last_price', full_sym, pd.NA)
+        if price is None or pd.isna(price):
+            bar_data[raw_code] = {'close': pd.NA, 'month_change': 0}
+            continue
+
+        bid = _tuple_value(row_values, col_pos, 'bid_price_1', full_sym, price)
+        ask = _tuple_value(row_values, col_pos, 'ask_price_1', full_sym, price)
+        bid_volume = _tuple_value(row_values, col_pos, 'bid_volume_1', full_sym, 0.0)
+        ask_volume = _tuple_value(row_values, col_pos, 'ask_volume_1', full_sym, 0.0)
+        tick_volume = _tuple_value(row_values, col_pos, 'volume_delta', full_sym, 0.0)
+
+        bar = {
+            'close': price,
+            'open': price,
+            'high': price,
+            'low': price,
+            'last_price': price,
+            'bid_price_1': bid,
+            'ask_price_1': ask,
+            'bid_volume_1': bid_volume,
+            'ask_volume_1': ask_volume,
+            'volume': tick_volume,
+            'tick_volume': tick_volume,
+            'cum_volume': _tuple_value(row_values, col_pos, 'volume', full_sym, 0.0),
+            'oi': _tuple_value(row_values, col_pos, 'oi', full_sym, pd.NA),
+            'is_fresh': bool(_tuple_value(row_values, col_pos, 'is_fresh', full_sym, 1.0)),
+            'month_change': 0,
+        }
+        if not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask > 0:
+            bar['mid_price'] = (float(bid) + float(ask)) / 2.0
+            bar['spread'] = float(ask) - float(bid)
+        else:
+            bar['mid_price'] = price
+            bar['spread'] = 0.0
+        bar_data[raw_code] = bar
 
     return bar_data
 
@@ -160,6 +248,63 @@ def _build_run_config(
         if "slow_window" in strategy_kwargs:
             config["slow_window"] = strategy_kwargs["slow_window"]
 
+        for key in (
+            "scalp_mode",
+            "shock_window_seconds",
+            "lookback_days",
+            "tail_prob",
+            "min_move_bps",
+            "min_history_samples",
+            "directional_ratio",
+            "max_spread_ticks",
+            "hold_seconds",
+            "take_profit_ticks",
+            "stop_loss_ticks",
+            "cooldown_seconds",
+            "threshold_refresh_ticks",
+            "pause_seconds",
+            "reversal_confirm_seconds",
+            "reversal_retrace_ratio",
+            "reversal_min_retrace_ticks",
+            "require_history_ready",
+            "warmup_days",
+            "hma_length",
+            "atr_period",
+            "ut_key_value",
+            "stc_length",
+            "stc_fast",
+            "stc_slow",
+            "stc_factor",
+            "stc_long_max",
+            "stc_short_min",
+            "require_price_above_hull",
+            "exit_on_opposite_signal",
+            "max_hold_bars",
+            "cooldown_bars",
+            "avoid_session_close_seconds",
+            "max_entries_per_symbol_per_day",
+            "exit_order_type",
+            "exit_order_ttl_seconds",
+            "std_window",
+            "entry_z",
+            "exit_z",
+            "min_bars_in_session",
+            "min_std_ticks",
+            "max_vwap_slope_ticks",
+            "slope_window",
+            "session_start_hour",
+            "donchian_window",
+            "breakout_buffer_ticks",
+            "min_channel_atr",
+            "max_extension_atr",
+            "atr_stop_mult",
+            "trend_window",
+            "exit_on_midline",
+            "allowed_entry_hours",
+        ):
+            if key in strategy_kwargs:
+                config[key] = strategy_kwargs[key]
+
         sizing = strategy_kwargs.get("sizing") or {}
         if isinstance(sizing, dict):
             config.update({
@@ -208,6 +353,8 @@ def _describe_slippage_setting(strategy, strategy_kwargs: dict) -> str:
 
     if order_type == 'limit':
         return f"策略限价单: 0 跳；市价/换月默认: {slippage_text}"
+    if order_type == 'opponent':
+        return f"策略对价单: 吃对手盘，0 跳；市价/换月默认: {slippage_text}"
     return f"策略市价单: {slippage_text}"
 
 
@@ -284,37 +431,72 @@ def run_backtest(
     equity_records = []
     rollover_count = 0
 
-    for current_time, row in df.iterrows():
-        current_date = current_time.date()
+    is_tick_matrix = freq == 'tick' and 'last_price' in df.columns.levels[0]
+    if is_tick_matrix:
+        col_pos = {col: pos for pos, col in enumerate(df.columns)}
+        for row_tuple in df.itertuples(index=True, name=None):
+            current_time = row_tuple[0]
+            row_values = row_tuple[1:]
+            current_date = current_time.date()
 
-        if last_date is not None and current_date != last_date:
-            account.settle_daily()
+            if last_date is not None and current_date != last_date:
+                account.settle_daily(last_close_prices)
 
-        last_date = current_date
+            last_date = current_date
+            bar_data = extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos)
 
-        bar_data = extract_bar_data(row, columns_level_1)
+            if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
+                continue
 
-        if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
-            continue
+            # Tick fast path preserves the original event order: match previous
+            # orders first, then let the strategy read the current tick.
+            if rollover_handler:
+                count = rollover_handler.process(broker, current_time, bar_data, last_close_prices)
+                rollover_count += count
 
-        # 事件顺序：先用当前 bar 撮合上一根 bar 留下的挂单，再让策略读取当前 bar 生成新订单。
-        # 因此策略在 on_bar 里发出的订单最早会在下一根 bar 被撮合。
-        broker.process_cross_section(current_time, bar_data)
-        strategy.on_bar(current_time, bar_data)
+            broker.process_cross_section(current_time, bar_data)
+            strategy.on_bar(current_time, bar_data)
 
-        # 如果是换月K线，执行换月（传入昨收价）
-        if rollover_handler:
-            count = rollover_handler.process(broker, current_time, bar_data, last_close_prices)
-            rollover_count += count
+            close_prices = _extract_close_prices(bar_data)
+            if close_prices:
+                last_close_prices = close_prices
+                equity_records.append({
+                    'datetime': current_time,
+                    'equity': account.get_total_equity(close_prices),
+                    'position_notional': _calc_position_notional(account, close_prices),
+                })
+    else:
+        for current_time, row in df.iterrows():
+            current_date = current_time.date()
 
-        close_prices = _extract_close_prices(bar_data)
-        if close_prices:
-            last_close_prices = close_prices  # 更新昨收价
-            equity_records.append({
-                'datetime': current_time,
-                'equity': account.get_total_equity(close_prices),
-                'position_notional': _calc_position_notional(account, close_prices),
-            })
+            if last_date is not None and current_date != last_date:
+                account.settle_daily(last_close_prices)
+
+            last_date = current_date
+
+            bar_data = extract_bar_data(row, columns_level_1)
+
+            if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
+                continue
+
+            # 如果是换月K线，执行换月（传入昨收价）
+            if rollover_handler:
+                count = rollover_handler.process(broker, current_time, bar_data, last_close_prices)
+                rollover_count += count
+
+            # 事件顺序：先用当前 bar 撮合上一根 bar 留下的挂单，再让策略读取当前 bar 生成新订单。
+            # 因此策略在 on_bar 里发出的订单最早会在下一根 bar 被撮合。
+            broker.process_cross_section(current_time, bar_data)
+            strategy.on_bar(current_time, bar_data)
+
+            close_prices = _extract_close_prices(bar_data)
+            if close_prices:
+                last_close_prices = close_prices  # 更新昨收价
+                equity_records.append({
+                    'datetime': current_time,
+                    'equity': account.get_total_equity(close_prices),
+                    'position_notional': _calc_position_notional(account, close_prices),
+                })
 
     print("\n" + "=" * 60)
     print(f"[Engine] 时间轴模拟结束 (模拟至 {actual_end})。")

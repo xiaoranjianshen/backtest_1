@@ -82,11 +82,16 @@ def _end_date_text(value, default: str) -> str:
 
 
 def _base_args(config: dict[str, Any]) -> dict[str, Any]:
+    freq = config.get("freq", "1d")
+    data_type = config.get("data_type", "main")
+    if freq == "tick" and data_type != "main":
+        raise ValueError("Tick backtest currently supports data_type='main' only.")
+
     return {
         "start_date": _date_text(config.get("start_date"), "2021-01-01 00:00:00"),
         "end_date": _end_date_text(config.get("end_date"), "2022-01-01 23:59:59"),
-        "freq": config.get("freq", "1d"),
-        "data_type": config.get("data_type", "main"),
+        "freq": freq,
+        "data_type": data_type,
         "initial_capital": float(config.get("initial_capital", 5_000_000.0)),
         "enable_main_rollover": bool(config.get("enable_main_rollover", True)),
     }
@@ -100,6 +105,11 @@ def _optional_int(value):
 
 def _market_execution(config: dict[str, Any]) -> dict[str, Any]:
     order_type = str(config.get("order_type", "market")).lower()
+    if order_type not in {"market", "opponent", "limit"}:
+        raise ValueError(f"Unsupported order_type: {order_type}")
+    if order_type == "opponent" and config.get("freq", "1d") != "tick":
+        raise ValueError("order_type='opponent' is only supported for tick backtests.")
+
     execution = {
         "order_type": order_type,
         "price_field": config.get("price_field", "close"),
@@ -206,6 +216,187 @@ def _build_zscore_reversal(config: dict[str, Any], spec: StrategySpec) -> dict[s
     return args
 
 
+def _build_tick_anomaly_scalping(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    local_config = dict(config)
+    local_config["freq"] = "tick"
+    local_config["data_type"] = "main"
+    local_config.setdefault("price_field", "mid_price")
+    local_config.setdefault("order_type", "opponent")
+    local_config.setdefault("slippage_ticks", 0.0)
+
+    raw_symbols = local_config.get("symbols") or local_config.get("symbol") or ["au"]
+    symbols = _parse_symbols(raw_symbols)
+    args = _base_args(local_config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "scalp_mode": local_config.get("scalp_mode", "reversal"),
+            "shock_window_seconds": float(local_config.get("shock_window_seconds", 3.0)),
+            "lookback_days": float(local_config.get("lookback_days", 10.0)),
+            "tail_prob": float(local_config.get("tail_prob", 0.001)),
+            "min_move_bps": float(local_config.get("min_move_bps", 4.0)),
+            "min_history_samples": int(local_config.get("min_history_samples", 5000)),
+            "directional_ratio": float(local_config.get("directional_ratio", 0.75)),
+            "max_spread_ticks": float(local_config.get("max_spread_ticks", 3.0)),
+            "hold_seconds": float(local_config.get("hold_seconds", 20.0)),
+            "take_profit_ticks": float(local_config.get("take_profit_ticks", 8.0)),
+            "stop_loss_ticks": float(local_config.get("stop_loss_ticks", 5.0)),
+            "cooldown_seconds": float(local_config.get("cooldown_seconds", 20.0)),
+            "threshold_refresh_ticks": int(local_config.get("threshold_refresh_ticks", 100)),
+            "pause_seconds": float(local_config.get("pause_seconds", 1.0)),
+            "reversal_confirm_seconds": float(local_config.get("reversal_confirm_seconds", 1.5)),
+            "reversal_retrace_ratio": float(local_config.get("reversal_retrace_ratio", 0.4)),
+            "reversal_min_retrace_ticks": float(local_config.get("reversal_min_retrace_ticks", 2.0)),
+            "require_history_ready": bool(local_config.get("require_history_ready", True)),
+            "warmup_days": float(local_config.get("warmup_days", 10.0)),
+            **_general_signal_kwargs(local_config),
+        },
+    })
+    return args
+
+
+def _build_utbot_stc_hull(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    local_config = dict(config)
+    local_config.setdefault("freq", "5m")
+    local_config.setdefault("data_type", "main")
+    local_config.setdefault("order_type", "market")
+    local_config.setdefault("price_field", "close")
+    local_config.setdefault("slippage_ticks", 0.5)
+
+    symbols = _parse_symbols(local_config.get("symbols") or local_config.get("symbol") or ["au", "ag"])
+    args = _base_args(local_config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "hma_length": int(local_config.get("hma_length", 55)),
+            "atr_period": int(local_config.get("atr_period", 10)),
+            "ut_key_value": float(local_config.get("ut_key_value", 1.0)),
+            "stc_length": int(local_config.get("stc_length", 12)),
+            "stc_fast": int(local_config.get("stc_fast", 26)),
+            "stc_slow": int(local_config.get("stc_slow", 50)),
+            "stc_factor": float(local_config.get("stc_factor", 0.5)),
+            "stc_long_max": float(local_config.get("stc_long_max", 35.0)),
+            "stc_short_min": float(local_config.get("stc_short_min", 65.0)),
+            "require_price_above_hull": bool(local_config.get("require_price_above_hull", True)),
+            "exit_on_opposite_signal": bool(local_config.get("exit_on_opposite_signal", True)),
+            "take_profit_ticks": float(local_config.get("take_profit_ticks", 24.0)),
+            "stop_loss_ticks": float(local_config.get("stop_loss_ticks", 16.0)),
+            "max_hold_bars": int(local_config.get("max_hold_bars", 36)),
+            "cooldown_bars": int(local_config.get("cooldown_bars", 3)),
+            "max_entries_per_symbol_per_day": _optional_int(local_config.get("max_entries_per_symbol_per_day", 20)),
+            **_general_signal_kwargs(local_config),
+        },
+    })
+    return args
+
+
+def _build_vwap_band_reversion(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    local_config = dict(config)
+    local_config.setdefault("freq", "5m")
+    local_config.setdefault("data_type", "main")
+    local_config.setdefault("order_type", "market")
+    local_config.setdefault("price_field", "close")
+    local_config.setdefault("slippage_ticks", 0.5)
+
+    symbols = _parse_symbols(local_config.get("symbols") or local_config.get("symbol") or ["au", "ag"])
+    args = _base_args(local_config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "std_window": int(local_config.get("std_window", 48)),
+            "entry_z": float(local_config.get("entry_z", 2.0)),
+            "exit_z": float(local_config.get("exit_z", 0.25)),
+            "min_bars_in_session": int(local_config.get("min_bars_in_session", 12)),
+            "min_std_ticks": float(local_config.get("min_std_ticks", 4.0)),
+            "max_vwap_slope_ticks": float(local_config.get("max_vwap_slope_ticks", 6.0)),
+            "slope_window": int(local_config.get("slope_window", 6)),
+            "take_profit_ticks": float(local_config.get("take_profit_ticks", 28.0)),
+            "stop_loss_ticks": float(local_config.get("stop_loss_ticks", 18.0)),
+            "max_hold_bars": int(local_config.get("max_hold_bars", 24)),
+            "cooldown_bars": int(local_config.get("cooldown_bars", 3)),
+            "max_entries_per_symbol_per_day": _optional_int(local_config.get("max_entries_per_symbol_per_day", 20)),
+            "session_start_hour": int(local_config.get("session_start_hour", 21)),
+            **_general_signal_kwargs(local_config),
+        },
+    })
+    return args
+
+
+def _build_donchian_atr_breakout(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    local_config = dict(config)
+    local_config.setdefault("freq", "5m")
+    local_config.setdefault("data_type", "main")
+    local_config.setdefault("order_type", "market")
+    local_config.setdefault("price_field", "close")
+    local_config.setdefault("slippage_ticks", 0.5)
+
+    symbols = _parse_symbols(local_config.get("symbols") or local_config.get("symbol") or ["au", "ag"])
+    args = _base_args(local_config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "donchian_window": int(local_config.get("donchian_window", 144)),
+            "atr_period": int(local_config.get("atr_period", 72)),
+            "trend_window": int(local_config.get("trend_window", 240)),
+            "breakout_buffer_ticks": float(local_config.get("breakout_buffer_ticks", 2.0)),
+            "min_channel_atr": float(local_config.get("min_channel_atr", 1.8)),
+            "max_extension_atr": float(local_config.get("max_extension_atr", 1.5)),
+            "atr_stop_mult": float(local_config.get("atr_stop_mult", 3.2)),
+            "exit_on_midline": bool(local_config.get("exit_on_midline", True)),
+            "max_hold_bars": int(local_config.get("max_hold_bars", 384)),
+            "cooldown_bars": int(local_config.get("cooldown_bars", 18)),
+            "max_entries_per_symbol_per_day": _optional_int(local_config.get("max_entries_per_symbol_per_day", 3)),
+            "allowed_entry_hours": local_config.get("allowed_entry_hours", "9,10,13,21,22,23,0,1,2"),
+            **_general_signal_kwargs(local_config),
+        },
+    })
+    return args
+
+
+def _build_opening_range_acd(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
+    local_config = dict(config)
+    local_config.setdefault("freq", "5m")
+    local_config.setdefault("data_type", "main")
+    local_config.setdefault("order_type", "market")
+    local_config.setdefault("price_field", "close")
+    local_config.setdefault("slippage_ticks", 0.5)
+
+    symbols = _parse_symbols(local_config.get("symbols") or local_config.get("symbol") or ["au", "ag"])
+    args = _base_args(local_config)
+    args.update({
+        "strategy_class": _import_class(spec.module, spec.class_name),
+        "symbols_input": symbols,
+        "strategy_kwargs": {
+            "target_symbols": symbols,
+            "opening_range_bars": int(local_config.get("opening_range_bars", 3)),
+            "atr_period": int(local_config.get("atr_period", 48)),
+            "trend_window": int(local_config.get("trend_window", 144)),
+            "breakout_buffer_ticks": float(local_config.get("breakout_buffer_ticks", 1.0)),
+            "min_range_atr": float(local_config.get("min_range_atr", 0.5)),
+            "max_extension_atr": float(local_config.get("max_extension_atr", 1.2)),
+            "atr_stop_mult": float(local_config.get("atr_stop_mult", 3.0)),
+            "trail_atr_mult": float(local_config.get("trail_atr_mult", 4.0)),
+            "take_profit_atr": float(local_config.get("take_profit_atr", 0.0)),
+            "exit_on_range_reentry": bool(local_config.get("exit_on_range_reentry", False)),
+            "max_hold_bars": int(local_config.get("max_hold_bars", 384)),
+            "cooldown_bars": int(local_config.get("cooldown_bars", 18)),
+            "max_entries_per_symbol_per_day": _optional_int(local_config.get("max_entries_per_symbol_per_day", 2)),
+            "session_start_hours": local_config.get("session_start_hours", "9,21"),
+            "allowed_entry_hours": local_config.get("allowed_entry_hours", "9,10,21,22,23,0,1"),
+            **_general_signal_kwargs(local_config),
+        },
+    })
+    return args
+
+
 def _build_factor(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
     symbols = _parse_symbols(config.get("symbols", config.get("factor_symbols", config.get("symbol"))))
     args = _base_args(config)
@@ -255,6 +446,46 @@ STRATEGY_SPECS = {
         class_name="ZScoreReversalStrategy",
         kind="general_signal",
         builder=_build_zscore_reversal,
+    ),
+    "tick_anomaly_scalping": StrategySpec(
+        key="tick_anomaly_scalping",
+        label="Tick Anomaly Scalping",
+        module="strategy.custom.tick_anomaly_scalping",
+        class_name="TickAnomalyScalpingStrategy",
+        kind="general_signal",
+        builder=_build_tick_anomaly_scalping,
+    ),
+    "utbot_stc_hull": StrategySpec(
+        key="utbot_stc_hull",
+        label="UT Bot + STC + Hull (5m)",
+        module="strategy.custom.utbot_stc_hull",
+        class_name="UTBotSTCHullStrategy",
+        kind="general_signal",
+        builder=_build_utbot_stc_hull,
+    ),
+    "vwap_band_reversion": StrategySpec(
+        key="vwap_band_reversion",
+        label="VWAP Band Reversion (5m)",
+        module="strategy.custom.vwap_band_reversion",
+        class_name="VWAPBandReversionStrategy",
+        kind="general_signal",
+        builder=_build_vwap_band_reversion,
+    ),
+    "donchian_atr_breakout": StrategySpec(
+        key="donchian_atr_breakout",
+        label="Donchian ATR Breakout (5m)",
+        module="strategy.custom.donchian_atr_breakout",
+        class_name="DonchianATRBreakoutStrategy",
+        kind="general_signal",
+        builder=_build_donchian_atr_breakout,
+    ),
+    "opening_range_acd": StrategySpec(
+        key="opening_range_acd",
+        label="Opening Range ACD (5m)",
+        module="strategy.custom.opening_range_acd",
+        class_name="OpeningRangeACDStrategy",
+        kind="general_signal",
+        builder=_build_opening_range_acd,
     ),
     "composite_factor": StrategySpec(
         key="composite_factor",

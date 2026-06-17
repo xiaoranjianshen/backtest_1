@@ -24,13 +24,74 @@ class MatchEngine:
 
     def _enqueue_order(self, order: Order, reference_price: float) -> bool:
         """过风控后入队，并冻结预估保证金"""
-        if not self.account.check_order_validation(order, reference_price):
+        available_adjustment = self._estimate_pending_close_margin_release(order)
+        if not self.account.check_order_validation(
+                order,
+                reference_price,
+                available_adjustment=available_adjustment,
+        ):
             order.status = OrderStatus.REJECTED
             return False
         order.reference_price = reference_price
         self.account.reserve_pending_margin(order, reference_price)
         self.pending_orders.append(order)
         return True
+
+    def _estimate_pending_close_margin_release(self, order: Order) -> float:
+        if order.offset != Offset.OPEN:
+            return 0.0
+
+        raw_code = pure_product_code(order.symbol)
+        target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
+        pos_key = self.account._get_position_key(raw_code, target_pos_dir)
+        pos = self.account.positions.get(pos_key)
+        if not pos:
+            return 0.0
+
+        total_volume = self.account._position_volume(pos)
+        if total_volume <= 0:
+            return 0.0
+
+        pending_close_volume = 0
+        for pending in self.pending_orders:
+            if pending.offset not in (Offset.CLOSE, Offset.CLOSE_TODAY):
+                continue
+            if pure_product_code(pending.symbol) != raw_code:
+                continue
+            if pending.direction != order.direction:
+                continue
+            pending_close_volume += pending.volume
+
+        if pending_close_volume <= 0:
+            return 0.0
+
+        releasable_volume = min(pending_close_volume, total_volume)
+        return pos.get('frozen_margin', 0.0) * (releasable_volume / total_volume)
+
+    def _reserved_cash_for_order(self, order: Order) -> float:
+        if order.offset != Offset.OPEN:
+            return 0.0
+        reference_price = getattr(order, 'reference_price', None)
+        if reference_price is None:
+            return 0.0
+        return self.account.estimate_required_cash(order, reference_price)
+
+    def _validate_order_at_fill(self, order: Order, exec_price: float) -> bool:
+        reserved_cash = self._reserved_cash_for_order(order)
+        return self.account.check_order_validation(
+            order,
+            exec_price,
+            pending_cash_adjustment=reserved_cash,
+        )
+
+    def _reject_pending_order(self, order: Order, reason: str):
+        order.status = OrderStatus.REJECTED
+        reference_price = getattr(order, 'reference_price', None)
+        if reference_price is not None:
+            self.account.release_pending_margin(order, reference_price)
+        if order in self.pending_orders:
+            self.pending_orders.remove(order)
+        print(f"[Broker Reject] {order.order_id} | {reason}")
 
     def insert_order(self, order: Order, reference_price: float):
         """策略下达订单，引擎智能路由平今/平昨，再过风控"""
@@ -39,6 +100,7 @@ class MatchEngine:
         target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
         pos_key = self.account._get_position_key(raw_code, target_pos_dir)
         pos_info = self.account.positions.get(pos_key, {})
+        self.account._normalise_position(pos_info)
         yd_vol = pos_info.get('yd_volume', 0)
         td_vol = pos_info.get('td_volume', 0)
 
@@ -100,6 +162,48 @@ class MatchEngine:
                 return True
         return False
 
+    @staticmethod
+    def _valid_price(value) -> bool:
+        return value is not None and not pd.isna(value) and float(value) > 0
+
+    @staticmethod
+    def _is_tick_bar(bar: dict) -> bool:
+        return 'bid_price_1' in bar or 'ask_price_1' in bar
+
+    @staticmethod
+    def _is_expired(order: Order, current_time: datetime) -> bool:
+        if order.ttl_seconds is None:
+            return False
+        if order.ttl_seconds <= 0:
+            return False
+        if order.insert_time is None:
+            return False
+        return (current_time - order.insert_time).total_seconds() > float(order.ttl_seconds)
+
+    def _cancel_expired_order(self, order: Order):
+        order.status = OrderStatus.CANCELED
+        self.account.release_pending_margin(order, order.reference_price)
+        if order in self.pending_orders:
+            self.pending_orders.remove(order)
+
+    def _tick_market_price(self, bar: dict, direction: Direction):
+        bid = bar.get('bid_price_1')
+        ask = bar.get('ask_price_1')
+        if direction == Direction.LONG and self._valid_price(ask):
+            return float(ask)
+        if direction == Direction.SHORT and self._valid_price(bid):
+            return float(bid)
+        return None
+
+    def _tick_limit_price(self, bar: dict, direction: Direction, limit_price: float):
+        bid = bar.get('bid_price_1')
+        ask = bar.get('ask_price_1')
+        if direction == Direction.LONG and self._valid_price(ask) and float(ask) <= limit_price:
+            return float(ask)
+        if direction == Direction.SHORT and self._valid_price(bid) and float(bid) >= limit_price:
+            return float(bid)
+        return None
+
     def process_cross_section(self, current_time: datetime, bar_data: Dict[str, dict]):
         """核心撮合循环 (高低点穿透与清算结算)"""
         new_trades = []
@@ -108,36 +212,66 @@ class MatchEngine:
             return new_trades
 
         for order in list(self.pending_orders):
+            if self._is_expired(order, current_time):
+                self._cancel_expired_order(order)
+                print(f"[Broker Cancel] {current_time} | order {order.order_id} expired")
+                continue
+
             raw_code = pure_product_code(order.symbol)
             if raw_code not in bar_data:
                 continue
 
             bar = bar_data[raw_code]
-            if pd.isna(bar.get('open', pd.NA)):
+            is_tick_bar = self._is_tick_bar(bar)
+            if not bool(bar.get('is_fresh', True)):
+                continue
+            if is_tick_bar:
+                has_price = (
+                    self._valid_price(bar.get('bid_price_1'))
+                    or self._valid_price(bar.get('ask_price_1'))
+                    or self._valid_price(bar.get('open'))
+                )
+            else:
+                has_price = self._valid_price(bar.get('open'))
+            if not has_price:
                 continue
 
             is_filled = False
             exec_price = 0.0
             slippage_cost_value = 0.0
 
-            if order.order_type == OrderType.MARKET:
-                is_filled = True
+            if order.order_type in (OrderType.MARKET, OrderType.OPPONENT):
                 # 市价单按下一根 bar 的 open 成交，并按订单/策略配置追加不利滑点。
-                slippage = self.fee_model.calculate_slippage(raw_code, order.slippage_ticks)
-                exec_price = bar['open'] + slippage if order.direction == Direction.LONG else bar['open'] - slippage
+                slippage = 0.0 if order.order_type == OrderType.OPPONENT else self.fee_model.calculate_slippage(
+                    raw_code, order.slippage_ticks
+                )
+                base_price = self._tick_market_price(bar, order.direction) if is_tick_bar else None
+                if order.order_type == OrderType.OPPONENT and base_price is None:
+                    continue
+                if base_price is None:
+                    base_price = float(bar['open'])
+                is_filled = True
+                exec_price = base_price + slippage if order.direction == Direction.LONG else base_price - slippage
                 multiplier = self.fee_model._get_meta_data(raw_code)['multiplier']
                 slippage_cost_value = slippage * order.volume * multiplier
 
             elif order.order_type == OrderType.LIMIT:
-                # 限价单只在 K 线高低点穿透时成交：可获得开盘跳空改善，但不额外扣滑点。
-                if order.direction == Direction.LONG and bar['low'] <= order.price:
+                if is_tick_bar:
+                    tick_fill_price = self._tick_limit_price(bar, order.direction, float(order.price))
+                    if tick_fill_price is not None:
+                        is_filled = True
+                        exec_price = tick_fill_price
+                elif order.direction == Direction.LONG and bar['low'] <= order.price:
                     is_filled = True
                     exec_price = min(order.price, bar['open'])
                 elif order.direction == Direction.SHORT and bar['high'] >= order.price:
                     is_filled = True
                     exec_price = max(order.price, bar['open'])
-
             if is_filled:
+                if not self._validate_order_at_fill(order, exec_price):
+                    self._reject_pending_order(order, "order state changed before fill")
+                    continue
+
                 commission = self.fee_model.calculate_commission(
                     symbol=raw_code, price=exec_price, volume=order.volume, offset=order.offset
                 )

@@ -111,6 +111,124 @@ def _pnl_to_color(pnl: float, max_abs_pnl: float) -> str:
     return "#e5e7eb"
 
 
+def _trading_time_rangebreaks():
+    """
+    Compress common Chinese futures non-trading intervals on intraday charts.
+
+    This changes only the Plotly display axis. It does not remove rows from
+    equity, trade, or exported CSV data.
+    """
+    return [
+        dict(bounds=["sat", "mon"]),
+        dict(pattern="hour", bounds=[2.5, 9.0]),
+        dict(pattern="hour", bounds=[10.25, 10.5]),
+        dict(pattern="hour", bounds=[11.5, 13.5]),
+        dict(pattern="hour", bounds=[15.0, 21.0]),
+    ]
+
+
+def _uses_intraday_axis(values) -> bool:
+    if values is None or len(values) == 0:
+        return False
+    dt = pd.to_datetime(pd.Series(values), errors='coerce').dropna()
+    if dt.empty:
+        return False
+    return bool((dt.dt.time != pd.Timestamp("00:00:00").time()).any())
+
+
+def _time_axis_layout(values=None) -> dict:
+    layout = dict(type="date")
+    if _uses_intraday_axis(values):
+        layout["rangebreaks"] = _trading_time_rangebreaks()
+    return layout
+
+
+REPORT_OVERVIEW_MARGIN = dict(l=72, r=72, t=16, b=54)
+
+
+def _format_time_label(value, tick_label: bool = False) -> str:
+    ts = pd.to_datetime(value, errors='coerce')
+    if pd.isna(ts):
+        return ""
+    if tick_label:
+        if ts.hour == 0 and ts.minute == 0 and ts.second == 0 and ts.microsecond == 0:
+            return ts.strftime("%Y-%m-%d")
+        return ts.strftime("%m-%d<br>%H:%M:%S")
+    if ts.microsecond:
+        return ts.strftime("%Y-%m-%d %H:%M:%S.%f").rstrip("0").rstrip(".")
+    if ts.hour == 0 and ts.minute == 0 and ts.second == 0:
+        return ts.strftime("%Y-%m-%d")
+    return ts.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _build_continuous_time_axis(base_values, max_ticks: int = 8) -> dict:
+    """
+    Use a dense integer axis for intraday charts while showing real timestamps.
+
+    Plotly date axes preserve calendar distance, so nights and weekends either
+    create blank space or need rangebreaks. A dense axis keeps the chart
+    continuous; tick labels and hover text still expose the original timestamp.
+    """
+    if base_values is None or len(base_values) == 0 or not _uses_intraday_axis(base_values):
+        return {
+            "enabled": False,
+            "layout": _time_axis_layout(base_values),
+            "base_ns": None,
+        }
+
+    dt = pd.to_datetime(pd.Series(base_values), errors='coerce')
+    n = len(dt)
+    if n == 0:
+        return {"enabled": False, "layout": dict(type="date"), "base_ns": None}
+
+    tick_count = max(2, min(max_ticks, n))
+    tick_idx = np.linspace(0, n - 1, tick_count, dtype=int).tolist()
+    tick_idx = sorted(set(tick_idx))
+
+    return {
+        "enabled": True,
+        "base_ns": dt.astype('int64').to_numpy(),
+        "layout": dict(
+            type="linear",
+            tickmode="array",
+            tickvals=tick_idx,
+            ticktext=[_format_time_label(dt.iloc[i], tick_label=True) for i in tick_idx],
+            showgrid=True,
+            gridcolor='#f3f4f6',
+        ),
+    }
+
+
+def _map_to_continuous_time_axis(values, axis: dict):
+    if values is None:
+        return [], []
+    labels = [_format_time_label(value) for value in values]
+    if not axis.get("enabled"):
+        return values, labels
+
+    base_ns = axis.get("base_ns")
+    if base_ns is None or len(base_ns) == 0:
+        return list(range(len(values))), labels
+
+    value_ns = pd.to_datetime(pd.Series(values), errors='coerce').astype('int64').to_numpy()
+    positions = []
+    invalid_ns = np.iinfo(np.int64).min
+    for item in value_ns:
+        if item == invalid_ns:
+            positions.append(None)
+            continue
+        pos = int(np.searchsorted(base_ns, item, side='left'))
+        if pos <= 0:
+            positions.append(0)
+            continue
+        if pos >= len(base_ns):
+            positions.append(len(base_ns) - 1)
+            continue
+        left = pos - 1
+        positions.append(left if abs(item - base_ns[left]) <= abs(base_ns[pos] - item) else pos)
+    return positions, labels
+
+
 def _price_field_from_column(col) -> str:
     if isinstance(col, tuple) and len(col) >= 2:
         return str(col[0]).lower()
@@ -172,9 +290,6 @@ class StrategyAnalyzer:
         short_queues = defaultdict(list)
 
         for t in self.trades:
-            if getattr(t, 'is_rollover', False):
-                continue
-
             sym = t.symbol
             is_close = t.offset in [Offset.CLOSE, Offset.CLOSE_TODAY]
 
@@ -219,7 +334,8 @@ class StrategyAnalyzer:
                     'open_time': target.trade_time, 'open_price': target.price,
                     'close_time': t.trade_time, 'close_price': t.price,
                     'direction': direction_label, 'volume': match_vol,
-                    'gross_pnl': gross_pnl, 'net_pnl': net_pnl, 'commission': open_comm + close_comm
+                    'gross_pnl': gross_pnl, 'net_pnl': net_pnl, 'commission': open_comm + close_comm,
+                    'is_rollover': bool(getattr(target, 'is_rollover', False) or getattr(t, 'is_rollover', False)),
                 })
 
                 queue_item['remaining_volume'] -= match_vol
@@ -404,6 +520,7 @@ class StrategyAnalyzer:
         """核心引擎：精准计算每一个维度，无死角"""
         total_trades = len(df_match) if not df_match.empty else 0
         total_net_pnl = df_match['net_pnl'].sum() if total_trades > 0 else 0.0
+        active_trade_days = 0
         actual_commission_events = self._get_commission_events(None if is_total else sym_name)
         total_commission = actual_commission_events['commission'].sum() if not actual_commission_events.empty else 0.0
         turnover_events = self._get_turnover_events(None if is_total else sym_name)
@@ -432,15 +549,23 @@ class StrategyAnalyzer:
             df_match_copy = df_match.copy()
             df_match_copy['close_time'] = pd.to_datetime(df_match_copy['close_time'])
             daily_pnl = df_match_copy.groupby(df_match_copy['close_time'].dt.date)['net_pnl'].sum()
+            active_trade_days = int(df_match_copy['close_time'].dt.date.nunique())
         else:
             win_rate_trade = pnl_ratio_trade = max_drawdown_trade = 0.0
             daily_pnl = pd.Series(dtype=float)
 
         if is_total and getattr(self, 'equity_df', None) is not None and not self.equity_df.empty:
-            eq = self.equity_df.sort_values('datetime').drop_duplicates('datetime', keep='last')
+            eq = self.equity_df.copy()
+            eq['datetime'] = pd.to_datetime(eq['datetime'])
+            eq = eq.sort_values('datetime').drop_duplicates('datetime', keep='last')
             equity_curve = eq.set_index('datetime')['equity']
-            daily_equity = equity_curve.resample('D').last().ffill().dropna()
-
+            daily_equity = (
+                eq.assign(session_date=eq['datetime'].dt.normalize())
+                .groupby('session_date', sort=True)['equity']
+                .last()
+                .dropna()
+            )
+            sample_days = int(len(daily_equity))
             # 使用绝对每日盈亏除以初始资金，避免动态权益 pct_change 放大资金出入后的收益率。
             daily_pnl_abs = daily_equity.diff().dropna()
             daily_pnl = daily_pnl_abs
@@ -450,6 +575,7 @@ class StrategyAnalyzer:
             max_open_value = float(eq['position_notional'].max()) if 'position_notional' in eq.columns else 0.0
         else:
             equity_curve = self.initial_capital + daily_pnl.cumsum()
+            sample_days = int(len(daily_pnl))
             if equity_curve.empty:
                 daily_returns = pd.Series(dtype=float)
                 final_equity = self.initial_capital
@@ -497,12 +623,12 @@ class StrategyAnalyzer:
         calmar_ratio = mtm_annual_return / abs(max_drawdown_rate) if max_drawdown_rate < 0 else float('inf')
 
         win_days = int((daily_pnl > 0).sum())
-        total_days = len(daily_pnl)
-        daily_win_rate = win_days / total_days if total_days > 0 else 0.0
+        daily_metric_days = len(daily_pnl)
+        daily_win_rate = win_days / daily_metric_days if daily_metric_days > 0 else 0.0
         daily_pnl_pos = daily_pnl[daily_pnl > 0]
         daily_pnl_neg = daily_pnl[daily_pnl <= 0]
         daily_pnl_ratio = (daily_pnl_pos.mean() / abs(daily_pnl_neg.mean())) if len(daily_pnl_pos) > 0 and len(daily_pnl_neg) > 0 and daily_pnl_neg.mean() != 0 else 0.0
-        avg_daily_turnover = daily_turnover.sum() / total_days if total_days > 0 else 0.0
+        avg_daily_turnover = daily_turnover.sum() / sample_days if sample_days > 0 else 0.0
 
         # 换月是系统维护仓位，不计入普通交易次数，但手续费需要单独披露。
         single_rollover_cnt = 0
@@ -551,7 +677,8 @@ class StrategyAnalyzer:
             "逐日胜率": f"{daily_win_rate * 100:.2f}%",
             "逐日盈亏比": f"{daily_pnl_ratio:.2f}",
             "交易次数": total_trades,
-            "交易日数": total_days,
+            "成交日数": active_trade_days,
+            "行情日数": sample_days,
             "日均成交额": f"¥{avg_daily_turnover:,.0f}",
             "保证金": margin_rate_text,
             "主力换月次数": rollover_cnt_text,
@@ -586,17 +713,24 @@ class StrategyAnalyzer:
             return "<div class='text-center text-gray-500 py-10'>无资金权益数据</div>"
 
         equity_x, equity_y = self._get_equity_series()
+        time_axis = _build_continuous_time_axis(equity_x)
+        plot_x, time_labels = _map_to_continuous_time_axis(equity_x, time_axis)
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=equity_x, y=equity_y, mode='lines', name='动态权益',
             line=dict(color='#3b82f6', width=2), fill='tozeroy', fillcolor='rgba(59,130,246,0.1)'
         ))
+        fig.data[-1].x = plot_x
+        fig.data[-1].customdata = time_labels
+        fig.data[-1].hovertemplate = "Time: %{customdata}<br>Equity: ¥%{y:,.0f}<extra></extra>"
         fig.update_layout(
-            height=400, margin=dict(l=10, r=10, t=10, b=10),
+            height=400, margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified", xaxis_title="", yaxis_title="权益 (￥)"
         )
         # 只返回图表 div，整页 HTML 由 frontend_index.py 统一组装。
+        fig.update_layout(hovermode="x" if time_axis.get("enabled") else "x unified")
+        fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_cum_pnl_html_div(self):
@@ -611,11 +745,16 @@ class StrategyAnalyzer:
         # 累计交易手续费使用真实成交流水，包含未平仓开仓手续费和换月手续费。
         commission_events = self._get_commission_events()
         if not commission_events.empty:
+            commission_events = commission_events.sort_values('datetime')
             comm_x = commission_events['datetime'].tolist()
             comm_y = commission_events['commission'].cumsum().tolist()
         else:
             comm_x = equity_x
             comm_y = [0] * len(equity_x)
+
+        time_axis = _build_continuous_time_axis(equity_x)
+        plot_x, time_labels = _map_to_continuous_time_axis(equity_x, time_axis)
+        comm_plot_x, comm_time_labels = _map_to_continuous_time_axis(comm_x, time_axis)
 
         fig = go.Figure()
 
@@ -632,13 +771,19 @@ class StrategyAnalyzer:
         fig.add_trace(go.Scatter(
             x=comm_x, y=comm_y,
             mode='lines', name='累计交易手续费', line=dict(color='#22c55e', width=2),
-            yaxis='y2',
             hovertemplate="日期: %{x}<br>累计手续费: ¥%{y:,.0f}<extra></extra>"
         ))
 
+        fig.data[0].x = plot_x
+        fig.data[0].customdata = time_labels
+        fig.data[0].hovertemplate = "Time: %{customdata}<br>Cumulative PnL: ¥%{y:,.0f}<extra></extra>"
+        fig.data[1].x = comm_plot_x
+        fig.data[1].customdata = comm_time_labels
+        fig.data[1].hovertemplate = "Time: %{customdata}<br>Cumulative Fee: ¥%{y:,.0f}<extra></extra>"
+
         fig.update_layout(
             height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
@@ -661,6 +806,9 @@ class StrategyAnalyzer:
             )
         )
 
+        fig.update_layout(yaxis2=dict(visible=False, showticklabels=False, title=None))
+        fig.update_layout(hovermode="x" if time_axis.get("enabled") else "x unified")
+        fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_net_value_with_benchmark_html_div(self):
@@ -671,6 +819,8 @@ class StrategyAnalyzer:
 
         # 1. 计算策略绝对净值
         strategy_nv = [val / self.initial_capital for val in equity_y]
+        time_axis = _build_continuous_time_axis(equity_x)
+        plot_x, time_labels = _map_to_continuous_time_axis(equity_x, time_axis)
 
         # 2. 提取底层价格，计算等权基准净值 (Buy & Hold)
         df_price = self.price_df.copy()
@@ -717,9 +867,16 @@ class StrategyAnalyzer:
             hovertemplate="日期: %{x}<br>基准净值: %{y:.4f}<extra></extra>"
         ))
 
+        fig.data[0].x = plot_x
+        fig.data[0].customdata = time_labels
+        fig.data[0].hovertemplate = "Time: %{customdata}<br>Strategy NAV: %{y:.4f}<extra></extra>"
+        fig.data[1].x = plot_x
+        fig.data[1].customdata = time_labels
+        fig.data[1].hovertemplate = "Time: %{customdata}<br>Benchmark NAV: %{y:.4f}<extra></extra>"
+
         fig.update_layout(
             height=350,
-            margin=dict(l=10, r=10, t=10, b=10),
+            margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)',
             plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
@@ -732,6 +889,8 @@ class StrategyAnalyzer:
             )
         )
 
+        fig.update_layout(hovermode="x" if time_axis.get("enabled") else "x unified")
+        fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_rolling_drawdown_html_div(self):
@@ -746,6 +905,8 @@ class StrategyAnalyzer:
         # 转为普通 list，避免 Plotly 把 pandas 索引误读为坐标。
         drawdown_y = ((df_eq['equity'] - peak) / peak).tolist()
         drawdown_x = df_eq['datetime'].tolist()
+        time_axis = _build_continuous_time_axis(drawdown_x)
+        plot_x, time_labels = _map_to_continuous_time_axis(drawdown_x, time_axis)
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -756,8 +917,12 @@ class StrategyAnalyzer:
             hovertemplate="日期: %{x}<br>回撤幅度: %{y:.2%}<extra></extra>"
         ))
 
+        fig.data[-1].x = plot_x
+        fig.data[-1].customdata = time_labels
+        fig.data[-1].hovertemplate = "Time: %{customdata}<br>Drawdown: %{y:.2%}<extra></extra>"
+
         fig.update_layout(
-            height=300, margin=dict(l=10, r=10, t=10, b=10),
+            height=300, margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified",
             yaxis=dict(
@@ -768,6 +933,8 @@ class StrategyAnalyzer:
                 gridcolor='#f3f4f6'
             )
         )
+        fig.update_layout(hovermode="x" if time_axis.get("enabled") else "x unified")
+        fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_leverage_and_position_html_div(self):
@@ -887,7 +1054,7 @@ class StrategyAnalyzer:
         ))
 
         fig.update_layout(
-            height=380, margin=dict(l=10, r=10, t=10, b=10),
+            height=380, margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             hovermode="x unified", barmode='relative',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
@@ -1479,7 +1646,6 @@ class StrategyAnalyzer:
             sym_label = sym.upper()
 
             fig = go.Figure()
-
             # 1. 绘制底层价格主线。
             fig.add_trace(go.Scatter(
                 x=dates, y=prices, mode='lines', name=f'{sym_label} {price_label}',
@@ -1497,7 +1663,6 @@ class StrategyAnalyzer:
             cs_x, cs_y, cs_text = [], [], []  # 平空
 
             for t in sym_trades:
-                if getattr(t, 'is_rollover', False): continue
 
                 txt = f"手数: {t.volume}<br>成交价: ¥{t.price:,.0f}"
 
@@ -1568,7 +1733,17 @@ class StrategyAnalyzer:
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 yaxis=dict(title=dict(text=f"{sym_label} {price_label}", font=dict(color="#1f2937")), tickfont=dict(color="#1f2937"),
                            showgrid=True, gridcolor='#f3f4f6'),
-                xaxis=dict(showgrid=False, tickfont=dict(color="#1f2937"))
+                xaxis=dict(
+                    showgrid=False,
+                    tickfont=dict(color="#1f2937"),
+                    rangebreaks=[
+                        dict(bounds=["sat", "mon"]),
+                        dict(pattern="hour", bounds=[2.5, 9]),
+                        dict(pattern="hour", bounds=[10.25, 10.5]),
+                        dict(pattern="hour", bounds=[11.5, 13.5]),
+                        dict(pattern="hour", bounds=[15, 21]),
+                    ],
+                )
             )
 
             replay_dicts[sym.upper()] = fig.to_html(full_html=False, include_plotlyjs=False)
@@ -1584,19 +1759,25 @@ class StrategyAnalyzer:
         df_eq = self.equity_df.copy()
         df_eq['datetime'] = pd.to_datetime(df_eq['datetime'])
         df_eq = df_eq.sort_values('datetime')
-        df_eq['date'] = df_eq['datetime'].dt.date
-
-        # 手续费来自真实成交流水，不能只看已配对平仓流水。
+        # 手续费必须按真实成交时间累计。不能先按日期汇总后 merge 到 tick 资金表，
+        # 否则同一天的手续费会在每一条 tick 权益记录上被重复 cumsum。
         commission_events = self._get_commission_events()
         if not commission_events.empty:
-            commission_events['date'] = commission_events['datetime'].dt.date
-            daily_comm = commission_events.groupby('date')['commission'].sum()
+            commission_timeline = (
+                commission_events
+                .sort_values('datetime')[['datetime', 'commission']]
+                .assign(累计手续费=lambda df: df['commission'].cumsum())
+                [['datetime', '累计手续费']]
+            )
+            df_eq = pd.merge_asof(
+                df_eq,
+                commission_timeline,
+                on='datetime',
+                direction='backward',
+            )
+            df_eq['累计手续费'] = df_eq['累计手续费'].fillna(0.0)
         else:
-            daily_comm = pd.Series(dtype=float)
-
-        # 合并手续费并计算累计值
-        df_eq = df_eq.merge(daily_comm.rename('daily_comm'), on='date', how='left').fillna({'daily_comm': 0})
-        df_eq['累计手续费'] = df_eq['daily_comm'].cumsum()
+            df_eq['累计手续费'] = 0.0
 
         # 组装最终呈现的表单格式
         df_res = pd.DataFrame({

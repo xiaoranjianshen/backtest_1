@@ -11,6 +11,7 @@ import uuid
 class OrderType(Enum):
     """订单类型"""
     MARKET = "MARKET"  # 市价单 (按下一根K线的 Open 加上滑点成交)
+    OPPONENT = "OPPONENT"  # 对价单 (tick 下买入吃卖一，卖出吃买一，不额外叠加滑点)
     LIMIT = "LIMIT"    # 限价单/挂单 (指定价格，依靠 K线的高低点穿透来成交)
 
 class Direction(Enum):
@@ -49,6 +50,7 @@ class Order:
     # 运行时状态 (由 Broker 撮合时动态修改)
     order_type: OrderType = OrderType.MARKET
     slippage_ticks: Optional[float] = None
+    ttl_seconds: Optional[float] = None
     status: OrderStatus = OrderStatus.PENDING
     filled_volume: int = 0
     filled_price: float = 0.0

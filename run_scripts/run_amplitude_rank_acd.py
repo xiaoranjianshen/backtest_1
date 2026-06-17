@@ -1,0 +1,132 @@
+# run_scripts/run_amplitude_rank_acd.py
+# -*- coding: utf-8 -*-
+
+import argparse
+import sys
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backtest_engine import run_backtest
+from config import FEE_DICT, SYMBOL_DICT, build_query_symbol
+from data_feed.data_provider import DataProvider
+from frontend_index import build_html_dashboard
+from strategy.custom.amplitude_rank_acd import (
+    AmplitudeRankACDStrategy,
+    build_amplitude_rank_selector,
+)
+
+
+TARGET_SYMBOLS = [code.lower() for code in SYMBOL_DICT if code.lower() in FEE_DICT]
+QUERY_SYMBOLS = [build_query_symbol(sym, "main") for sym in TARGET_SYMBOLS]
+QUERY_SYMBOLS = [sym for sym in QUERY_SYMBOLS if sym]
+START_DATE = "2025-05-15 09:00:00"
+END_DATE = "2026-05-15 15:00:00"
+SELECTOR_TRAIN_START = "2018-01-01"
+DEFAULT_TOP_N = 5
+DEFAULT_PORTFOLIO_MARGIN_TARGET = 0.25
+DEFAULT_WEIGHT_METHOD = "score"
+DEFAULT_MAX_PER_SECTOR = 0
+
+
+def build_selector(top_n: int, weight_method: str, max_per_sector: int):
+    provider = DataProvider()
+    daily_df = provider.get_history(
+        symbols=QUERY_SYMBOLS,
+        start_date=SELECTOR_TRAIN_START,
+        end_date=END_DATE,
+        freq="1d",
+        data_type="main",
+    )
+    selector, selection_table = build_amplitude_rank_selector(
+        daily_wide_df=daily_df,
+        backtest_start=START_DATE,
+        backtest_end=END_DATE,
+        top_n=top_n,
+        weight_method=weight_method,
+        max_per_sector=max_per_sector or None,
+        min_daily_turnover=1e9,
+        train_start=SELECTOR_TRAIN_START,
+    )
+
+    output_dir = PROJECT_ROOT / "exports" / "selectors"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sector_tag = f"sector{max_per_sector}" if max_per_sector else "nosectorcap"
+    selection_path = output_dir / f"amplitude_rank_acd_top{top_n}_{weight_method}_{sector_tag}_selection.csv"
+    selection_table.to_csv(selection_path, index=False, encoding="utf-8-sig")
+    print(f"[Selector] 已输出每日选品表: {selection_path}")
+    return selector
+
+
+def build_strategy_kwargs(selector_by_date: dict, margin_target: float) -> dict:
+    return {
+        "target_symbols": TARGET_SYMBOLS,
+        "selector_by_date": selector_by_date,
+        "opening_range_bars": 3,
+        "atr_period": 48,
+        "trend_window": 144,
+        "breakout_buffer_ticks": 1.0,
+        "min_range_atr": 0.5,
+        "max_extension_atr": 1.2,
+        "atr_stop_mult": 3.0,
+        "trail_atr_mult": 4.0,
+        "take_profit_atr": 0.0,
+        "exit_on_range_reentry": False,
+        "max_hold_bars": 384,
+        "cooldown_bars": 18,
+        "max_entries_per_symbol_per_day": 2,
+        "session_start_hours": "9,21",
+        "allowed_entry_hours": "9,10,21,22,23,0,1",
+        "sizing": {
+            "mode": "equity_pct",
+            "value": margin_target,
+            "min_volume": 1,
+            "max_volume": None,
+            "round_lot": 1,
+        },
+        "execution": {
+            "order_type": "market",
+            "price_field": "close",
+            "slippage_ticks": 0.5,
+        },
+        "exit": {
+            "close_pct": 1.0,
+            "allow_reverse": False,
+            "respect_pending_orders": True,
+        },
+        "record_signals": False,
+    }
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run dynamic amplitude-rank ACD strategy.")
+    parser.add_argument("--top-n", type=int, default=DEFAULT_TOP_N)
+    parser.add_argument("--margin-target", type=float, default=DEFAULT_PORTFOLIO_MARGIN_TARGET)
+    parser.add_argument("--weight-method", choices=["score", "equal"], default=DEFAULT_WEIGHT_METHOD)
+    parser.add_argument("--max-per-sector", type=int, default=DEFAULT_MAX_PER_SECTOR)
+    args = parser.parse_args()
+
+    selector = build_selector(
+        top_n=args.top_n,
+        weight_method=args.weight_method,
+        max_per_sector=args.max_per_sector,
+    )
+    strategy_kwargs = build_strategy_kwargs(selector, margin_target=args.margin_target)
+
+    analyzer = run_backtest(
+        strategy_class=AmplitudeRankACDStrategy,
+        symbols_input=TARGET_SYMBOLS,
+        start_date=START_DATE,
+        end_date=END_DATE,
+        freq="5m",
+        data_type="main",
+        initial_capital=1_000_000.0,
+        strategy_kwargs=strategy_kwargs,
+        enable_main_rollover=False,
+    )
+
+    if analyzer is not None:
+        build_html_dashboard(analyzer)

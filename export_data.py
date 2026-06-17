@@ -26,7 +26,7 @@ from config import SYMBOL_DICT
 EXPORT_DIR = os.path.join(current_dir, "exports")
 
 # 2. 选择导出频率 (freq)
-FREQ = '1m'
+FREQ = 'tick'
 # FREQ = '5m'
 # FREQ = '1d'
 # FREQ = 'tick'
@@ -43,7 +43,7 @@ SYMBOL_SELECTION_MODE = 'custom'
 
 # 模式 A：全市场所有品种一次性全部导出（当前启用）
 # 模式 B：自定义指定品种组合（需要时再打开 custom）
-INPUT_SYMBOLS = ['rb', 'I', 'TA605', 'rb2410']
+INPUT_SYMBOLS = ['au']
 # 模式 C：按照板块筛选导出（需要时再打开 sector）
 #TARGET_SECTOR = '黑色'
 
@@ -110,8 +110,8 @@ else:
     raise ValueError("SYMBOL_SELECTION_MODE 只能是 'all'、'custom' 或 'sector'")
 
 # 5. 选择导出的时间范围
-START_DATE = '2026-05-15 09:00:00'
-END_DATE = '2026-05-15 23:59:59'
+START_DATE = '2026-06-11 09:00:00'
+END_DATE = '2026-06-11 23:59:59'
 
 
 def _extract_product_code(symbol: str) -> str:
@@ -175,7 +175,7 @@ TICK_RAW_EXPORT_FIELDS = [
 ]
 
 # 7. 导出格式选择
-SAVE_FORMAT = 'csv'  # 'csv' 或 'parquet' (Parquet 体积更小，读取速度快10倍)
+SAVE_FORMAT = 'parquet'  # 'csv' 或 'parquet' (Parquet 体积更小，读取速度快10倍)
 
 # 8. 是否把双层 MultiIndex 表头拍平？
 # True  -> 表头变成: '螺纹钢(rb)[主连]_close', '铁矿石(i)[主连]_open' (方便 Excel 筛选查看)

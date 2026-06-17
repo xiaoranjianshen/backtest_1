@@ -41,6 +41,8 @@ class MainContractRollover:
         account = broker.account
 
         for sym, bar in bar_data.items():
+            if not bool(bar.get('is_fresh', True)):
+                continue
             if not self._is_month_change(bar):
                 continue
 

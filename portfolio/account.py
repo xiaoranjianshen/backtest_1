@@ -32,6 +32,14 @@ class Account:
         meta = self.fee_model._get_meta_data(raw_code)
         return reference_price * volume * meta['multiplier'] * meta['margin_rate']
 
+    def estimate_required_cash(self, order: Order, reference_price: float) -> float:
+        if order.offset != Offset.OPEN:
+            return 0.0
+        raw_code = pure_product_code(order.symbol)
+        margin = self.estimate_required_margin(raw_code, order.volume, reference_price)
+        commission = self.fee_model.calculate_commission(raw_code, reference_price, order.volume, Offset.OPEN)
+        return margin + commission
+
     def _get_position_key(self, symbol: str, direction: Direction) -> str:
         return f"{symbol}_{direction.value}"
 
@@ -48,17 +56,81 @@ class Account:
             self.positions[pos_key] = {
                 'yd_volume': 0,
                 'td_volume': 0,
+                'yd_avg_price': 0.0,
+                'td_avg_price': 0.0,
                 'avg_price': 0.0,
                 'frozen_margin': 0.0,
             }
 
-    def settle_daily(self):
+    @staticmethod
+    def _weighted_avg(price_a: float, vol_a: int, price_b: float, vol_b: int) -> float:
+        total = vol_a + vol_b
+        if total <= 0:
+            return 0.0
+        return (price_a * vol_a + price_b * vol_b) / total
+
+    def _sync_position_avg(self, pos: dict):
+        pos['avg_price'] = self._weighted_avg(
+            pos.get('yd_avg_price', 0.0), pos.get('yd_volume', 0),
+            pos.get('td_avg_price', 0.0), pos.get('td_volume', 0),
+        )
+
+    def _normalise_position(self, pos: dict):
+        if not pos:
+            return
+        legacy_avg = float(pos.get('avg_price', 0.0) or 0.0)
+        if 'yd_volume' not in pos and 'td_volume' not in pos and 'volume' in pos:
+            pos['yd_volume'] = pos.get('volume', 0)
+            pos['td_volume'] = 0
+        pos.setdefault('yd_volume', 0)
+        pos.setdefault('td_volume', 0)
+        pos.setdefault('yd_avg_price', legacy_avg if pos.get('yd_volume', 0) > 0 else 0.0)
+        pos.setdefault('td_avg_price', legacy_avg if pos.get('td_volume', 0) > 0 else 0.0)
+        pos.setdefault('frozen_margin', 0.0)
+        self._sync_position_avg(pos)
+
+    def settle_daily(self, settlement_prices: dict = None):
         """
         日切结算：将当日新开仓并入昨仓，供下一交易日平今/平昨路由使用。
         """
-        for pos in self.positions.values():
-            pos['yd_volume'] = self._position_volume(pos)
+        settlement_prices = settlement_prices or {}
+        for pos_key, pos in list(self.positions.items()):
+            self._normalise_position(pos)
+            volume = self._position_volume(pos)
+            if volume <= 0:
+                del self.positions[pos_key]
+                continue
+
+            symbol, direction = pos_key.rsplit('_', 1)
+            current_avg = pos['avg_price']
+            settlement_price = settlement_prices.get(symbol)
+
+            if settlement_price is not None:
+                settlement_price = float(settlement_price)
+                meta = self.fee_model._get_meta_data(symbol)
+                multiplier = meta['multiplier']
+                margin_rate = meta['margin_rate']
+
+                if direction == Direction.LONG.value:
+                    settlement_pnl = (settlement_price - current_avg) * volume * multiplier
+                else:
+                    settlement_pnl = (current_avg - settlement_price) * volume * multiplier
+
+                old_margin = pos.get('frozen_margin', 0.0)
+                new_margin = settlement_price * volume * multiplier * margin_rate
+                self.total_pnl += settlement_pnl
+                self.available += settlement_pnl
+                self.available += old_margin - new_margin
+                self.frozen_margin = max(0.0, self.frozen_margin - old_margin + new_margin)
+                pos['frozen_margin'] = new_margin
+                pos['yd_avg_price'] = settlement_price
+            else:
+                pos['yd_avg_price'] = current_avg
+
+            pos['yd_volume'] = volume
             pos['td_volume'] = 0
+            pos['td_avg_price'] = 0.0
+            self._sync_position_avg(pos)
 
     def get_total_equity(self, current_prices: dict) -> float:
         """盯市总权益 = 可用 + 冻结保证金 + 浮动盈亏"""
@@ -73,6 +145,7 @@ class Account:
                 continue
 
             current_price = current_prices[symbol]
+            self._normalise_position(pos_info)
             open_price = pos_info['avg_price']
             multiplier = self.fee_model._get_meta_data(symbol)['multiplier']
 
@@ -83,17 +156,20 @@ class Account:
 
         return self.available + self.frozen_margin + unrealized_pnl
 
-    def check_order_validation(self, order: Order, reference_price: float) -> bool:
+    def check_order_validation(
+            self,
+            order: Order,
+            reference_price: float,
+            pending_cash_adjustment: float = 0.0,
+            available_adjustment: float = 0.0,
+    ) -> bool:
         raw_code = pure_product_code(order.symbol)
 
         if order.offset == Offset.OPEN:
-            required_margin = self.estimate_required_margin(raw_code, order.volume, reference_price)
-            estimated_commission = self.fee_model.calculate_commission(
-                raw_code, reference_price, order.volume, Offset.OPEN
-            )
-            # 开仓实际会同时扣保证金和手续费；只校验保证金会让极限资金账户成交后变成负可用。
-            required_cash = required_margin + estimated_commission
-            effective_available = self.available - self.pending_margin
+            # Opening orders reserve margin plus estimated commission.
+            required_cash = self.estimate_required_cash(order, reference_price)
+            effective_pending = max(0.0, self.pending_margin - pending_cash_adjustment)
+            effective_available = self.available + available_adjustment - effective_pending
             if effective_available < required_cash:
                 print(
                     f"[Risk Check] 资金不足：拟开仓 {raw_code} {order.volume}手，"
@@ -105,9 +181,11 @@ class Account:
 
         target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
         pos_key = self._get_position_key(raw_code, target_pos_dir)
+        pos = self.positions.get(pos_key, {})
+        self._normalise_position(pos)
 
         if order.offset == Offset.CLOSE:
-            yd_vol = self.positions.get(pos_key, {}).get('yd_volume', 0)
+            yd_vol = pos.get('yd_volume', 0)
             if yd_vol < order.volume:
                 print(
                     f"[Risk Check] 昨仓不足：拟平昨 {raw_code} {order.volume}手，"
@@ -117,7 +195,7 @@ class Account:
             return True
 
         if order.offset == Offset.CLOSE_TODAY:
-            td_vol = self.positions.get(pos_key, {}).get('td_volume', 0)
+            td_vol = pos.get('td_volume', 0)
             if td_vol < order.volume:
                 print(
                     f"[Risk Check] 今仓不足：拟平今 {raw_code} {order.volume}手，"
@@ -130,11 +208,11 @@ class Account:
 
     def reserve_pending_margin(self, order: Order, reference_price: float):
         if order.offset == Offset.OPEN:
-            self.pending_margin += self.estimate_required_margin(order.symbol, order.volume, reference_price)
+            self.pending_margin += self.estimate_required_cash(order, reference_price)
 
     def release_pending_margin(self, order: Order, reference_price: float):
         if order.offset == Offset.OPEN:
-            reserved = self.estimate_required_margin(order.symbol, order.volume, reference_price)
+            reserved = self.estimate_required_cash(order, reference_price)
             self.pending_margin = max(0.0, self.pending_margin - reserved)
 
     def process_trade(self, trade: Trade):
@@ -148,14 +226,15 @@ class Account:
             self._init_position(pos_key)
 
             pos = self.positions[pos_key]
-            old_vol = self._position_volume(pos)
-            new_vol = old_vol + trade.volume
-
-            pos['avg_price'] = (
-                (pos['avg_price'] * old_vol + trade.price * trade.volume) / new_vol
-                if new_vol > 0 else trade.price
+            self._normalise_position(pos)
+            old_td_vol = pos.get('td_volume', 0)
+            new_td_vol = old_td_vol + trade.volume
+            pos['td_avg_price'] = self._weighted_avg(
+                pos.get('td_avg_price', 0.0), old_td_vol,
+                trade.price, trade.volume,
             )
             pos['td_volume'] += trade.volume
+            self._sync_position_avg(pos)
 
             margin_locked = trade.price * trade.volume * multiplier * margin_rate
             self.available -= trade.commission
@@ -170,12 +249,21 @@ class Account:
         if not pos:
             return
 
+        self._normalise_position(pos)
         pos_total_before = self._position_volume(pos)
         if pos_total_before <= 0:
             return
 
+        if trade.offset == Offset.CLOSE_TODAY:
+            if pos.get('td_volume', 0) < trade.volume:
+                return
+            open_avg_price = pos.get('td_avg_price', pos['avg_price'])
+        else:
+            if pos.get('yd_volume', 0) < trade.volume:
+                return
+            open_avg_price = pos.get('yd_avg_price', pos['avg_price'])
+
         self.available -= trade.commission
-        open_avg_price = pos['avg_price']
 
         if target_pos_dir == Direction.LONG:
             pnl = (trade.price - open_avg_price) * trade.volume * multiplier
@@ -187,8 +275,12 @@ class Account:
 
         if trade.offset == Offset.CLOSE_TODAY:
             pos['td_volume'] -= trade.volume
+            if pos['td_volume'] <= 0:
+                pos['td_avg_price'] = 0.0
         else:
             pos['yd_volume'] -= trade.volume
+            if pos['yd_volume'] <= 0:
+                pos['yd_avg_price'] = 0.0
 
         pos_frozen_margin = pos.get(
             'frozen_margin',
@@ -198,6 +290,7 @@ class Account:
         self.available += margin_released
         self.frozen_margin = max(0.0, self.frozen_margin - margin_released)
         pos['frozen_margin'] = max(0.0, pos_frozen_margin - margin_released)
+        self._sync_position_avg(pos)
 
         if self._position_volume(pos) <= 0:
             del self.positions[pos_key]

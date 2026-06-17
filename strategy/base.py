@@ -45,38 +45,46 @@ class BaseStrategy:
         short_vol = self.get_position_volume(symbol, Direction.SHORT)
         return long_vol - short_vol
 
+    @staticmethod
+    def _order_type_from_price(price: float, order_type=None):
+        if order_type is not None:
+            if isinstance(order_type, str):
+                return OrderType(order_type.strip().upper())
+            return order_type
+        return OrderType.MARKET if price == 0.0 else OrderType.LIMIT
+
     def buy(self, symbol: str, volume: int, price: float = 0.0, reference_price: float = None,
-            slippage_ticks: float = None):
+            slippage_ticks: float = None, order_type=None, ttl_seconds: float = None):
         if volume <= 0: return
         ref_price = reference_price if reference_price is not None else price
         order = Order(symbol=symbol, direction=Direction.LONG, offset=Offset.OPEN,
-                      volume=volume, price=price, order_type=OrderType.MARKET if price == 0.0 else OrderType.LIMIT,
-                      insert_time=self.current_time, slippage_ticks=slippage_ticks)
+                      volume=volume, price=price, order_type=self._order_type_from_price(price, order_type),
+                      insert_time=self.current_time, slippage_ticks=slippage_ticks, ttl_seconds=ttl_seconds)
         self.broker.insert_order(order, reference_price=ref_price)
 
     def sell(self, symbol: str, volume: int, price: float = 0.0, reference_price: float = None,
-             slippage_ticks: float = None):
+             slippage_ticks: float = None, order_type=None, ttl_seconds: float = None):
         if volume <= 0: return
         ref_price = reference_price if reference_price is not None else price
         order = Order(symbol=symbol, direction=Direction.SHORT, offset=Offset.CLOSE,
-                      volume=volume, price=price, order_type=OrderType.MARKET if price == 0.0 else OrderType.LIMIT,
-                      insert_time=self.current_time, slippage_ticks=slippage_ticks)
+                      volume=volume, price=price, order_type=self._order_type_from_price(price, order_type),
+                      insert_time=self.current_time, slippage_ticks=slippage_ticks, ttl_seconds=ttl_seconds)
         self.broker.insert_order(order, reference_price=ref_price)
 
     def short(self, symbol: str, volume: int, price: float = 0.0, reference_price: float = None,
-              slippage_ticks: float = None):
+              slippage_ticks: float = None, order_type=None, ttl_seconds: float = None):
         if volume <= 0: return
         ref_price = reference_price if reference_price is not None else price
         order = Order(symbol=symbol, direction=Direction.SHORT, offset=Offset.OPEN,
-                      volume=volume, price=price, order_type=OrderType.MARKET if price == 0.0 else OrderType.LIMIT,
-                      insert_time=self.current_time, slippage_ticks=slippage_ticks)
+                      volume=volume, price=price, order_type=self._order_type_from_price(price, order_type),
+                      insert_time=self.current_time, slippage_ticks=slippage_ticks, ttl_seconds=ttl_seconds)
         self.broker.insert_order(order, reference_price=ref_price)
 
     def cover(self, symbol: str, volume: int, price: float = 0.0, reference_price: float = None,
-              slippage_ticks: float = None):
+              slippage_ticks: float = None, order_type=None, ttl_seconds: float = None):
         if volume <= 0: return
         ref_price = reference_price if reference_price is not None else price
         order = Order(symbol=symbol, direction=Direction.LONG, offset=Offset.CLOSE,
-                      volume=volume, price=price, order_type=OrderType.MARKET if price == 0.0 else OrderType.LIMIT,
-                      insert_time=self.current_time, slippage_ticks=slippage_ticks)
+                      volume=volume, price=price, order_type=self._order_type_from_price(price, order_type),
+                      insert_time=self.current_time, slippage_ticks=slippage_ticks, ttl_seconds=ttl_seconds)
         self.broker.insert_order(order, reference_price=ref_price)

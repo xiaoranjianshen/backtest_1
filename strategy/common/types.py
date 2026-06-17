@@ -19,6 +19,7 @@ class ExecutionConfig:
     ticks: float = 0.0
     price_field: str = "close"
     slippage_ticks: float = 1.0
+    order_ttl_seconds: float | None = None
 
 
 @dataclass

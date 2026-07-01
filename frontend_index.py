@@ -98,6 +98,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
     html_fig_pnl_curves = analyzer.get_multi_asset_pnl_curves_html_div()
     html_fig_pnl_dist = analyzer.get_pnl_distribution_html_div()
     html_fig_period_ret = analyzer.get_period_returns_html_div()
+    html_signal_diagnostics = analyzer.get_signal_diagnostics_html_div() if hasattr(analyzer, 'get_signal_diagnostics_html_div') else ""
 
     # 2. 提取并组装交易复盘区。
     replay_dicts = analyzer.get_replay_charts_dict() if hasattr(analyzer, 'get_replay_charts_dict') else {}
@@ -544,6 +545,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     const sections = [
                         {{ title: '策略总览 (Strategy Overview)', tabId: 'tab1', btnId: 'btn-tab1', targetId: 'tab1' }},
                         {{ title: '交易归因 (Trade Attribution)', tabId: 'tab2', btnId: 'btn-tab2', targetId: 'tab2', showAllPeriodReturns: true }},
+                        {{ title: '信号检测 (Signal Inspection)', tabId: 'tab-signal', btnId: 'btn-tab-signal', targetId: 'tab-signal' }},
                         {{ title: '交易复盘 (Trade Replay)', tabId: 'tab3', btnId: 'btn-tab3', targetId: 'report-replay-section', showAllReplay: true }}
                     ];
 
@@ -582,6 +584,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                         <button id="btn-tab-config" onclick="switchTab('tab-config', 'btn-tab-config')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">配置中心 (Configuration)</button>
                         <button id="btn-tab1" onclick="switchTab('tab1', 'btn-tab1')" class="tab-btn bg-white text-[#1e3a8a] font-bold px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none shadow-[0_-2px_10px_rgba(0,0,0,0.1)]">策略总览 (Strategy Overview)</button>
                         <button id="btn-tab2" onclick="switchTab('tab2', 'btn-tab2')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">交易归因 (Trade Attribution)</button>
+                        <button id="btn-tab-signal" onclick="switchTab('tab-signal', 'btn-tab-signal')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">信号检测 (Signal Inspection)</button>
                         <button id="btn-tab3" onclick="switchTab('tab3', 'btn-tab3')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">复盘明细 (Replay & Logs)</button>
                     </div>
                 </div>
@@ -657,6 +660,10 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     <div id="period-returns-chart" class="w-full">{html_fig_period_ret}</div>
                 </div>
             </div> 
+
+            <div id="tab-signal" class="tab-content space-y-6">
+                {html_signal_diagnostics}
+            </div>
 
             <div id="tab3" class="tab-content space-y-6">
                 {html_replay_section}

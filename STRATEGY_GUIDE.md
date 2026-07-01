@@ -1,6 +1,6 @@
 # Backtest-1 策略开发简明指南
 
-这份文档只保留新用户最需要知道的内容：怎么运行、回测链路怎么走、策略应该写什么、关键函数在哪里。
+这份文档就是新用户优先看的策略模板文档。它只保留最需要知道的内容：怎么运行、回测链路怎么走、策略应该写什么、run_scripts 脚本怎么写、关键函数在哪里。
 
 更完整的安装说明看 `README.md`。
 
@@ -48,6 +48,7 @@ $env:BACKTEST_CH_PASS="你的密码"
 | `strategy/` | 策略逻辑。新策略主要写在这里。 |
 | `strategy/general_template.py` | 推荐新策略继承的通用模板。 |
 | `strategy/common/` | 信号解析、仓位计算、市价/限价执行、调仓。 |
+| `strategy/common/types.py` | 通用信号协议说明。这里定义策略能返回哪些字段。 |
 | `broker/` | 订单、撮合、成交、换月。 |
 | `portfolio/account.py` | 资金、持仓、保证金、盈亏。 |
 | `analyzer/` | 绩效统计和复盘数据。 |
@@ -167,19 +168,25 @@ return {
 }
 ```
 
-常用字段：
+常用字段。下面这些字段不是每个策略都必须用，但都是当前框架已经支持的功能：
 
 | 字段 | 含义 |
 | --- | --- |
 | `signal` | 方向：`1` 做多，`-1` 做空，`0` 平仓，`None` 不操作。 |
 | `position_mode` | 仓位模式：`target` 目标仓位，`delta` 增减仓，`reduce` 部分平仓，`flat` 全平。 |
+| `signal_score` | 信号分数，只用于信号检测、IC/Rank IC，不直接影响下单。 |
 | `reason` | 信号原因，显示在复盘日志里。 |
 | `metrics` | 策略指标，例如 MA、zscore、close。 |
 | `close_pct` | 平仓比例，例如 `0.5` 表示平一半。 |
 | `close_volume` | 指定平几手。 |
 | `target_volume` | 指定目标手数。 |
 | `target_net` | 指定目标净持仓，多头为正、空头为负。 |
+| `target_weight` | 目标名义市值占当前权益比例，可为正负，例如 `0.05` 表示目标名义多头约占权益 5%。 |
+| `target_margin_pct` | 目标保证金占当前权益比例，可为正负，适合选品策略分配组合保证金。 |
 | `delta_volume` | 指定增减几手。 |
+| `risk_pct` | 按单笔最大风险占当前权益比例开仓，需要配合 `stop_loss_ticks` 或 `stop_loss_price`。 |
+| `stop_loss_ticks` | 风险开仓使用的止损跳数。 |
+| `stop_loss_price` | 风险开仓使用的止损价格。 |
 | `limit_price` | 指定限价单价格。 |
 
 ## 7. 最常用的信号写法
@@ -228,6 +235,56 @@ return {
 
 表示最终净多 3 手。
 
+按目标名义权重调仓：
+
+```python
+{"target_weight": 0.05, "reason": "rank_top_1"}
+```
+
+表示目标名义多头约占当前权益 5%。如果写成 `-0.05`，表示目标名义空头约占当前权益 5%。
+
+按目标保证金占比调仓：
+
+```python
+{"signal": 1, "target_margin_pct": 0.08, "reason": "selected_symbol"}
+```
+
+表示该品种目标占用保证金约为当前权益 8%。这比直接写固定手数更适合“每天选 3-5 个品种”的策略。
+
+按止损风险反推手数：
+
+```python
+{"signal": 1, "risk_pct": 0.005, "stop_loss_ticks": 20, "reason": "risk_sized_entry"}
+```
+
+表示如果触发 20 跳止损，单笔理论亏损约控制在当前权益的 0.5%。
+
+带模型分数的信号：
+
+```python
+{"signal": 1, "signal_score": 0.83, "position_mode": "target", "reason": "model_long"}
+```
+
+`signal_score` 不改变下单方向和手数，只给信号检测页计算 IC / Rank IC 使用。没有 `signal_score` 时，系统会从 `target_weight`、`target_margin_pct`、`target_net` 或 `signal` 推断分数。
+
+动态选品策略通常这样写：
+
+```python
+signals = {}
+selected = self.selector_by_date.get(today, {})
+
+for sym in self.symbols:
+    weight = selected.get(sym, 0.0)
+    if weight == 0:
+        if self.get_net_position(sym) != 0:
+            signals[sym] = {"signal": 0, "position_mode": "flat", "reason": "removed_from_pool"}
+        continue
+
+    signals[sym] = {"target_margin_pct": weight, "reason": "selected_by_model"}
+```
+
+注意：动态选品只能在本次回测已经加载的品种池里切换。策略不能在回测中途交易一个没有被加载进来的新品种。
+
 ## 8. 仓位和下单由哪里控制
 
 策略文件只负责信号。
@@ -243,16 +300,26 @@ return {
 }
 ```
 
-支持的 `sizing.mode`：
+支持的 `sizing.mode`。这些功能已经在 `strategy/common/sizing.py` 里实现，不一定每个策略都会用到：
 
 | mode | 含义 |
 | --- | --- |
-| `fixed_volume` | 固定手数。 |
-| `fixed_margin` | 固定保证金金额。 |
-| `fixed_notional` | 固定名义金额。 |
-| `capital_pct` | 按初始资金比例。 |
-| `equity_pct` | 按当前总权益比例。 |
-| `available_pct` | 按当前可用资金比例。 |
+| `fixed_volume` | 固定手数。`value=2` 表示基础仓位为 2 手。 |
+| `fixed_margin` | 固定保证金金额。`value=100000` 表示按 10 万保证金反推手数。 |
+| `fixed_notional` | 固定名义金额。`value=1000000` 表示按 100 万合约市值反推手数。 |
+| `capital_pct` | 按初始资金比例。`value=0.03` 表示用初始资金的 3% 作为保证金。 |
+| `equity_pct` | 按当前总权益比例。`value=0.03` 表示用当前权益的 3% 作为保证金。 |
+| `available_pct` | 按当前可用资金比例。`value=0.03` 表示用当前可用资金的 3% 作为保证金。 |
+
+策略信号里也可以单独覆盖仓位：
+
+| 字段 | 用法 |
+| --- | --- |
+| `target_volume` | 指定目标手数，不再使用 sizing 计算出来的基础手数。 |
+| `target_net` | 指定最终净持仓，例如 `3` 是净多 3 手，`-2` 是净空 2 手。 |
+| `target_weight` | 目标名义市值占当前权益比例，适合模型权重。 |
+| `target_margin_pct` | 目标保证金占当前权益比例，适合动态选品策略。 |
+| `risk_pct` | 按止损距离控制单笔风险，需要配合 `stop_loss_ticks` 或 `stop_loss_price`。 |
 
 执行方式配置：
 
@@ -373,7 +440,100 @@ class MyStrategy(GeneralSignalStrategy):
 
 如果只想先本地跑通，也可以先写一个 `run_scripts/run_my_strategy.py`，不接配置中心。
 
-## 11. 关键函数速查
+## 11. run_scripts 脚本标准格式
+
+每个 `run_scripts/run_xxx.py` 都建议按下面格式写。这样别人打开脚本时，可以直接看到品种、时间、资金、策略参数、仓位规则、执行规则。
+
+```python
+# run_scripts/run_my_strategy.py
+# -*- coding: utf-8 -*-
+
+import sys
+from pathlib import Path
+
+
+# 让脚本无论从 PyCharm 还是 PowerShell 运行，都能正确导入项目模块。
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from backtest_engine import run_backtest
+from frontend_index import build_html_dashboard
+from strategy.custom.my_strategy import MyStrategy
+
+
+# 1. 回测品种。多品种策略写 list，单品种也建议先写 list，方便以后扩展。
+TARGET_SYMBOLS = ["rb", "hc", "i"]
+
+# 2. 回测时间。分钟和 tick 策略建议写到具体交易时间。
+START_DATE = "2021-01-01 00:00:00"
+END_DATE = "2022-01-01 23:59:59"
+
+# 3. 策略参数。上面是策略自己的逻辑参数，下面是通用仓位/执行/平仓参数。
+STRATEGY_KWARGS = {
+    "target_symbols": TARGET_SYMBOLS,
+
+    # 策略自己的参数：这些名字由 MyStrategy.__init__ 决定。
+    "lookback": 20,
+
+    # 通用仓位规则：这里决定基础仓位怎么算。
+    "sizing": {
+        "mode": "equity_pct",
+        "value": 0.03,
+        "min_volume": 1,
+        "max_volume": None,
+        "round_lot": 1,
+    },
+
+    # 通用执行规则：这里决定市价、限价、对价单和滑点。
+    "execution": {
+        "order_type": "market",
+        "price_field": "close",
+        "slippage_ticks": 0.5,
+    },
+
+    # 通用平仓规则：这里决定 signal=0 时默认平多少，以及是否允许反手。
+    "exit": {
+        "close_pct": 1.0,
+        "allow_reverse": True,
+        "respect_pending_orders": True,
+    },
+
+    # 是否记录信号检测数据。建议保持 True。
+    "record_signals": True,
+}
+
+
+if __name__ == "__main__":
+    analyzer = run_backtest(
+        strategy_class=MyStrategy,
+        symbols_input=TARGET_SYMBOLS,
+        start_date=START_DATE,
+        end_date=END_DATE,
+        freq="1d",
+        data_type="main",
+        initial_capital=5_000_000.0,
+        strategy_kwargs=STRATEGY_KWARGS,
+    )
+
+    if analyzer is not None:
+        build_html_dashboard(analyzer)
+```
+
+脚本里最常改的是这几块：
+
+| 位置 | 作用 |
+| --- | --- |
+| `TARGET_SYMBOLS` | 本次回测加载哪些品种。动态选品策略也只能在这个池子里切换。 |
+| `START_DATE` / `END_DATE` | 回测时间。 |
+| `freq` | 数据周期，例如 `1d`、`5m`、`1m`、`tick`。 |
+| `initial_capital` | 初始资金。 |
+| `STRATEGY_KWARGS` 顶部 | 策略自己的逻辑参数。 |
+| `sizing` | 开仓基础仓位怎么算。 |
+| `execution` | 市价/限价/对价单和滑点怎么处理。 |
+| `exit` | 默认平仓比例、是否允许反手、是否考虑未成交挂单。 |
+
+## 12. 关键函数速查
 
 | 函数 | 位置 | 作用 |
 | --- | --- | --- |
@@ -388,7 +548,7 @@ class MyStrategy(GeneralSignalStrategy):
 | `process_cross_section()` | `broker/match_engine.py` | 撮合订单，生成成交。 |
 | `process_trade()` | `portfolio/account.py` | 成交后更新资金、持仓和保证金。 |
 
-## 12. 未来函数边界
+## 13. 未来函数边界
 
 当前设计是：
 
@@ -408,7 +568,7 @@ class MyStrategy(GeneralSignalStrategy):
 - 用当前 bar 的 high/low 判断“盘中先触发”，同时又按当前 bar 内更好价格成交。
 - 在 `backtest_engine.py` 里硬写策略指标或交易规则。
 
-## 13. 新手检查清单
+## 14. 新手检查清单
 
 写完新策略后检查：
 

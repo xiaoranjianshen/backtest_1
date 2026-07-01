@@ -47,6 +47,8 @@ class FactorTemplate(GeneralSignalStrategy):
             return
 
         signals = self.generate_signals(bar_data) or {}
+        if self.record_signals:
+            self._record_raw_signal_events(current_time, signals, bar_data)
         records = self.rebalancer.rebalance(signals, bar_data)
 
         if self.record_signals:

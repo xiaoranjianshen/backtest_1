@@ -33,8 +33,8 @@ class BaseStrategy:
 
     def get_position_volume(self, symbol: str, direction: Direction) -> int:
         """Return current physical position volume for one symbol and direction."""
-        from config import pure_product_code
-        raw_code = pure_product_code(symbol)
+        from config import trade_symbol_code
+        raw_code = trade_symbol_code(symbol)
         pos_key = self.account._get_position_key(raw_code, direction)
         pos = self.account.positions.get(pos_key)
         return self.account._position_volume(pos) if pos else 0

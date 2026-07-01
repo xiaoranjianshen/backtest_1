@@ -56,11 +56,13 @@ env/
 .env
 .codex_tmp/
 cache_data/
+exports/
 *.parquet
 logs/
 *.csv
 *.pkl
 streamlit_ui_*.log
+streamlit_platform_*.log
 ui/.runtime/
 
 # Backtest output results (generated files)

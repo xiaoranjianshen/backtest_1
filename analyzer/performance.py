@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-工业级回测引擎 - 分析师模块 (Analyzer)
-功能：FIFO 交易配对、量化指标计算，资金/价格对比图(单/多品种自适应)、交易 DNA 四宫格
+\u5de5\u4e1a\u7ea7\u56de\u6d4b\u5f15\u64ce - \u5206\u6790\u5e08\u6a21\u5757 (Analyzer)
+\u529f\u80fd\uff1aFIFO \u4ea4\u6613\u914d\u5bf9\u3001\u91cf\u5316\u6307\u6807\u8ba1\u7b97\u3001\u8d44\u91d1/\u4ef7\u683c\u5bf9\u6bd4\u56fe\u3001\u591a\u54c1\u79cd\u5206\u6790\u3001\u4fe1\u53f7\u68c0\u6d4b\u3002
 """
 import os
 import sys
@@ -22,25 +22,25 @@ from broker.order import Direction, Offset
 
 PRICE_FIELD_PRIORITY = ('close', 'last_price', 'settlement', 'open')
 SECTOR_ORDER = [
-    "黑色",
-    "有色",
-    "贵金属",
-    "化工",
-    "能源",
-    "油脂油料",
-    "软商品",
-    "生鲜",
-    "建材",
-    "股指",
-    "国债",
-    "航运",
-    "新能源",
-    "未分类",
+    "\u9ed1\u8272",
+    "\u6709\u8272",
+    "\u8d35\u91d1\u5c5e",
+    "\u5316\u5de5",
+    "\u80fd\u6e90",
+    "\u6cb9\u8102\u6cb9\u6599",
+    "\u8f6f\u5546\u54c1",
+    "\u751f\u9c9c",
+    "\u5efa\u6750",
+    "\u80a1\u6307",
+    "\u56fd\u503a",
+    "\u822a\u8fd0",
+    "\u65b0\u80fd\u6e90",
+    "\u672a\u5206\u7c7b",
 ]
 
 
 def _console_text(value) -> str:
-    text = str(value).replace('¥', '￥')
+    text = str(value).replace('\u00a5', '\uffe5')
     encoding = sys.stdout.encoding or 'utf-8'
     return text.encode(encoding, errors='replace').decode(encoding, errors='replace')
 
@@ -72,14 +72,52 @@ def _extract_product_code_from_label(label) -> str:
     return pure_product_code(raw)
 
 
+def _symbol_price_lookup_keys(label) -> list[str]:
+    """Build possible lookup keys for price columns and trade symbols."""
+    from config import pure_product_code, trade_symbol_code
+
+    keys: list[str] = []
+    label_str = str(label).strip()
+    if label_str:
+        keys.append(label_str.lower())
+
+    paren_match = re.search(r'\((.*?)\)', label_str)
+    if paren_match:
+        inner_label = paren_match.group(1)
+        keys.append(inner_label.lower())
+        try:
+            inner_trade_code = trade_symbol_code(inner_label)
+            if inner_trade_code:
+                keys.append(str(inner_trade_code).lower())
+        except Exception:
+            pass
+
+    if not paren_match:
+        try:
+            trade_code = trade_symbol_code(label_str)
+            if trade_code:
+                keys.append(str(trade_code).lower())
+        except Exception:
+            pass
+
+    try:
+        product_code = pure_product_code(label_str)
+        if product_code:
+            keys.append(str(product_code).lower())
+    except Exception:
+        pass
+
+    return list(dict.fromkeys(keys))
+
+
 def _symbol_sector(symbol: str) -> str:
     from config import SYMBOL_DICT, pure_product_code
 
     raw_code = pure_product_code(symbol)
     for code, attrs in SYMBOL_DICT.items():
         if code.lower() == raw_code.lower():
-            return attrs[3] if len(attrs) > 3 else "未分类"
-    return "未分类"
+            return attrs[3] if len(attrs) > 3 else "\u672a\u5206\u7c7b"
+    return "\u672a\u5206\u7c7b"
 
 
 def _symbol_sort_key(symbol: str):
@@ -243,10 +281,10 @@ def _symbol_label_from_column(col) -> str:
 
 def _price_field_label(field: str) -> str:
     labels = {
-        'close': '收盘价',
-        'last_price': '最新价',
-        'settlement': '结算价',
-        'open': '开盘价',
+        'close': '\u6536\u76d8\u4ef7',
+        'last_price': '\u6700\u65b0\u4ef7',
+        'settlement': '\u7ed3\u7b97\u4ef7',
+        'open': '\u5f00\u76d8\u4ef7',
     }
     return labels.get(field, field)
 
@@ -261,7 +299,8 @@ class StrategyAnalyzer:
     def __init__(self, trades: list, price_df: pd.DataFrame, initial_capital: float,
                  symbol: str, freq: str, strategy_name: str,
                  account_summary: dict = None, equity_df: pd.DataFrame = None,
-                 describe_params: dict = None):
+                 describe_params: dict = None, signal_records: list | None = None,
+                 rebalance_records: list | None = None):
         self.trades = trades
         self.price_df = price_df.copy()
         self.initial_capital = initial_capital
@@ -271,6 +310,9 @@ class StrategyAnalyzer:
         self.account_summary = account_summary or {}
         self.equity_df = equity_df.copy() if equity_df is not None else None
         self.describe_params = describe_params or {}
+        self.signal_records = list(signal_records or [])
+        self.rebalance_records = list(rebalance_records or [])
+        self.signal_df = pd.DataFrame()
 
         self.matched_trades = []
         self.metrics = {}
@@ -283,7 +325,7 @@ class StrategyAnalyzer:
             os.makedirs(self.output_dir)
 
     def _match_trades_fifo(self):
-        """FIFO 开平仓配对：按品种独立队列，换月流水不参与配对"""
+        """FIFO �?平仓配�?：按品�?�?��队列，换月流水不参与配�?"""
         self.matched_trades = []
         self.unmatched_close_volume = 0
         long_queues = defaultdict(list)
@@ -352,14 +394,14 @@ class StrategyAnalyzer:
             ).dt.total_seconds() / 3600.0
 
     def _calculate_metrics(self):
-        """计算绩效指标 (支持多品种按行展开)"""
+        """计算绩效指标 (�?��多品种按行展�?)"""
         self.metrics_list = []
 
-        # 1. 计算总指标
+        # 1. 计算总指�?
         total_metrics = self._calc_single_metrics(self.match_df, self.symbol, self.strategy_name, is_total=True)
         self.metrics_list.append(total_metrics)
 
-        # 2. 计算各分品种明细
+        # 2. 计算各分品�?明细
         if self.symbol == 'MULTI' and not self.match_df.empty:
             for sym, df_sym in self.match_df.groupby('symbol'):
                 sym_metrics = self._calc_single_metrics(df_sym, sym, "-", is_total=False)
@@ -394,6 +436,9 @@ class StrategyAnalyzer:
             last_price = float(series.iloc[-1])
             if code not in prices or priority < prices[code][0]:
                 prices[code] = (priority, last_price)
+            for key in _symbol_price_lookup_keys(_symbol_label_from_column(col)):
+                if key not in prices or priority < prices[key][0]:
+                    prices[key] = (priority, last_price)
 
         self._last_price_by_symbol_cache = {code: item[1] for code, item in prices.items()}
         return self._last_price_by_symbol_cache
@@ -468,7 +513,7 @@ class StrategyAnalyzer:
         Actual charged commissions from broker trades.
 
         `match_df` only contains FIFO-matched closed trades, so it excludes open
-        position commissions and rollover costs. Anything named "累计手续费" should
+        position commissions and rollover costs. Anything named "\u7d2f\u8ba1\u624b\u7eed\u8d39" should
         come from the physical trade ledger instead.
         """
         rows = []
@@ -517,7 +562,7 @@ class StrategyAnalyzer:
         return dict(pnl_by_symbol)
 
     def _calc_single_metrics(self, df_match, sym_name, strat_name, is_total=False):
-        """核心引擎：精准计算每一个维度，无死角"""
+        """\u6838\u5fc3\u5f15\u64ce\uff1a\u7cbe\u51c6\u8ba1\u7b97\u6bcf\u4e00\u4e2a\u7ef4\u5ea6\uff0c\u65e0\u6b7b\u89d2\u3002"""
         total_trades = len(df_match) if not df_match.empty else 0
         total_net_pnl = df_match['net_pnl'].sum() if total_trades > 0 else 0.0
         active_trade_days = 0
@@ -566,7 +611,7 @@ class StrategyAnalyzer:
                 .dropna()
             )
             sample_days = int(len(daily_equity))
-            # 使用绝对每日盈亏除以初始资金，避免动态权益 pct_change 放大资金出入后的收益率。
+            # 使用绝�?每日盈亏除以初�?资金，避免动态权�?pct_change 放大资金出入后的收益率�??
             daily_pnl_abs = daily_equity.diff().dropna()
             daily_pnl = daily_pnl_abs
             daily_returns = daily_pnl_abs / self.initial_capital
@@ -630,7 +675,7 @@ class StrategyAnalyzer:
         daily_pnl_ratio = (daily_pnl_pos.mean() / abs(daily_pnl_neg.mean())) if len(daily_pnl_pos) > 0 and len(daily_pnl_neg) > 0 and daily_pnl_neg.mean() != 0 else 0.0
         avg_daily_turnover = daily_turnover.sum() / sample_days if sample_days > 0 else 0.0
 
-        # 换月是系统维护仓位，不计入普通交易次数，但手续费需要单独披露。
+        # 换月�?��统维护仓位，不�?入普通交易�?数，但手�?���?要单�?��露�??
         single_rollover_cnt = 0
         single_rollover_fee = 0.0
         if not is_total:
@@ -653,52 +698,52 @@ class StrategyAnalyzer:
         fee_type = meta.get('fee_type', '')
         fee_open = meta.get('fee_open', 0)
         if fee_type == 'ratio':
-            fee_rule = f"比例 {float(fee_open)*10000:.1f}‱"
+            fee_rule = f"\u6bd4\u4f8b {float(fee_open)*10000:.1f}\u2031"
         elif fee_type == 'fixed':
-            fee_rule = f"固定 {float(fee_open)}元"
+            fee_rule = f"\u56fa\u5b9a {float(fee_open)}\u5143"
         else:
             fee_rule = "-"
 
         return {
-            "合约": "总计 (MULTI)" if is_total else sym_name.upper(),
-            "总收益": f"{realized_total_return * 100:.2f}%",
-            "年化收益": f"{realized_annual_return * 100:.2f}%",
-            "总收益(含持仓)": f"{mtm_total_return * 100:.2f}%",
-            "年化收益(含持仓)": f"{mtm_annual_return * 100:.2f}%",
-            "累计盈亏": f"¥{realized_cum_net:,.0f}",  # 已平仓净盈亏
-            "均笔利润(跳)": tick_profit,
-            "最大开仓市值": f"¥{max_open_value:,.0f}" if is_total else "-",
-            "单日最大回撤": f"¥{max_drawdown_trade:,.0f}",
-            "最大回撤率": f"{max_drawdown_rate * 100:.2f}%",
-            "年化Sharpe": f"{sharpe_ratio:.2f}",
-            "卡玛比": f"{calmar_ratio:.2f}",
-            "逐笔胜率": f"{win_rate_trade * 100:.2f}%",
-            "逐笔盈亏比": f"{pnl_ratio_trade:.2f}",
-            "逐日胜率": f"{daily_win_rate * 100:.2f}%",
-            "逐日盈亏比": f"{daily_pnl_ratio:.2f}",
-            "交易次数": total_trades,
-            "成交日数": active_trade_days,
-            "行情日数": sample_days,
-            "日均成交额": f"¥{avg_daily_turnover:,.0f}",
-            "保证金": margin_rate_text,
-            "主力换月次数": rollover_cnt_text,
-            "换月手续费": rollover_fee_text,
-            "费率模型": "-" if is_total else fee_rule,
-            "累计手续费": f"¥{total_commission:,.0f}",
+            "\u5408\u7ea6": "\u603b\u8ba1 (MULTI)" if is_total else sym_name.upper(),
+            "\u603b\u6536\u76ca": f"{realized_total_return * 100:.2f}%",
+            "\u5e74\u5316\u6536\u76ca": f"{realized_annual_return * 100:.2f}%",
+            "\u603b\u6536\u76ca(\u542b\u6301\u4ed3)": f"{mtm_total_return * 100:.2f}%",
+            "\u5e74\u5316\u6536\u76ca(\u542b\u6301\u4ed3)": f"{mtm_annual_return * 100:.2f}%",
+            "\u7d2f\u8ba1\u76c8\u4e8f": f"\u00a5{realized_cum_net:,.0f}",
+            "\u5747\u7b14\u5229\u6da6(\u8df3)": tick_profit,
+            "\u6700\u5927\u5f00\u4ed3\u5e02\u503c": f"\u00a5{max_open_value:,.0f}" if is_total else "-",
+            "\u5355\u65e5\u6700\u5927\u56de\u64a4": f"\u00a5{max_drawdown_trade:,.0f}",
+            "\u6700\u5927\u56de\u64a4\u7387": f"{max_drawdown_rate * 100:.2f}%",
+            "\u5e74\u5316Sharpe": f"{sharpe_ratio:.2f}",
+            "\u5361\u739b\u6bd4": f"{calmar_ratio:.2f}",
+            "\u9010\u7b14\u80dc\u7387": f"{win_rate_trade * 100:.2f}%",
+            "\u9010\u7b14\u76c8\u4e8f\u6bd4": f"{pnl_ratio_trade:.2f}",
+            "\u9010\u65e5\u80dc\u7387": f"{daily_win_rate * 100:.2f}%",
+            "\u9010\u65e5\u76c8\u4e8f\u6bd4": f"{daily_pnl_ratio:.2f}",
+            "\u4ea4\u6613\u6b21\u6570": total_trades,
+            "\u6210\u4ea4\u65e5\u6570": active_trade_days,
+            "\u884c\u60c5\u65e5\u6570": sample_days,
+            "\u65e5\u5747\u6210\u4ea4\u989d": f"\u00a5{avg_daily_turnover:,.0f}",
+            "\u4fdd\u8bc1\u91d1": margin_rate_text,
+            "\u4e3b\u529b\u6362\u6708\u6b21\u6570": rollover_cnt_text,
+            "\u6362\u6708\u624b\u7eed\u8d39": rollover_fee_text,
+            "\u8d39\u7387\u6a21\u578b": "-" if is_total else fee_rule,
+            "\u7d2f\u8ba1\u624b\u7eed\u8d39": f"\u00a5{total_commission:,.0f}",
         }
 
     # =========================================================================
-    # 🌟 以下为全新架构：后端 HTML Div 生成器 (不再调用 fig.show() 和 .png)
+    # 🌟 以下为全新架构：后�? HTML Div 生成�?(不再调用 fig.show() �?.png)
     # =========================================================================
 
     def _get_equity_series(self):
-        """获取用于画图的资金权益序列"""
-        # 优先使用引擎记录的真实物理权益
+        """\u83b7\u53d6\u7528\u4e8e\u753b\u56fe\u7684\u8d44\u91d1\u6743\u76ca\u5e8f\u5217\u3002"""
+        # 优先使用引擎记录的真实物理权�?
         if getattr(self, 'equity_df', None) is not None and not self.equity_df.empty:
             df = self.equity_df.sort_values('datetime').drop_duplicates('datetime', keep='last')
             return df['datetime'].tolist(), df['equity'].tolist()
 
-        # 兜底：如果没记录，就用平仓流水伪造一个
+        # 兜底：�?果没记录，就用平仓流水伪造一�?
         if self.match_df.empty:
             return [], []
         df_sort = self.match_df.copy()
@@ -708,16 +753,16 @@ class StrategyAnalyzer:
         return list(equity_curve.index), equity_curve.tolist()
 
     def get_equity_html_div(self):
-        """生成动态权益曲线的纯 HTML div"""
+        """\u751f\u6210\u52a8\u6001\u6743\u76ca\u66f2\u7ebf\u7684 HTML div\u3002"""
         if self.match_df.empty and (self.equity_df is None or self.equity_df.empty):
-            return "<div class='text-center text-gray-500 py-10'>无资金权益数据</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u8d44\u91d1\u6743\u76ca\u6570\u636e</div>"
 
         equity_x, equity_y = self._get_equity_series()
         time_axis = _build_continuous_time_axis(equity_x)
         plot_x, time_labels = _map_to_continuous_time_axis(equity_x, time_axis)
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=equity_x, y=equity_y, mode='lines', name='动态权益',
+            x=equity_x, y=equity_y, mode='lines', name='\u52a8\u6001\u6743\u76ca',
             line=dict(color='#3b82f6', width=2), fill='tozeroy', fillcolor='rgba(59,130,246,0.1)'
         ))
         fig.data[-1].x = plot_x
@@ -726,23 +771,23 @@ class StrategyAnalyzer:
         fig.update_layout(
             height=400, margin=REPORT_OVERVIEW_MARGIN,
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            hovermode="x unified", xaxis_title="", yaxis_title="权益 (￥)"
+            hovermode="x unified", xaxis_title="", yaxis_title="\u6743\u76ca (\u00a5)"
         )
-        # 只返回图表 div，整页 HTML 由 frontend_index.py 统一组装。
+        # �?��回图�?div，整�?HTML �?frontend_index.py 统一组�?�?
         fig.update_layout(hovermode="x" if time_axis.get("enabled") else "x unified")
         fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_cum_pnl_html_div(self):
-        """生成累计盈亏与手续费的双 Y 轴 HTML div"""
+        """\u751f\u6210\u7d2f\u8ba1\u76c8\u4e8f\u4e0e\u624b\u7eed\u8d39\u7684\u53cc Y \u8f74 HTML div\u3002"""
         equity_x, equity_y = self._get_equity_series()
         if not equity_y:
-            return "<div class='text-center text-gray-500 py-10'>无资金数据</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u8d44\u91d1\u6570\u636e</div>"
 
-        # 累计盈亏 = 动态权益 - 初始本金
+        # �??盈亏 = 动�?�权�?- 初�?�?��
         cum_pnl = [val - self.initial_capital for val in equity_y]
 
-        # 累计交易手续费使用真实成交流水，包含未平仓开仓手续费和换月手续费。
+        # �??交易手续费使用真实成交流水，包含�?��仓开仓手�?��和换月手�?���?
         commission_events = self._get_commission_events()
         if not commission_events.empty:
             commission_events = commission_events.sort_values('datetime')
@@ -758,20 +803,20 @@ class StrategyAnalyzer:
 
         fig = go.Figure()
 
-        # 累计盈亏曲线。
+        # �??盈亏曲线�?
         fig.add_trace(go.Scatter(
             x=equity_x, y=cum_pnl,
-            mode='lines', name='累计盈亏', line=dict(color='#ef4444', width=2),
+            mode='lines', name='\u7d2f\u8ba1\u76c8\u4e8f', line=dict(color='#ef4444', width=2),
             fill='tozeroy', fillcolor='rgba(239,68,68,0.1)',
             yaxis='y1',
-            hovertemplate="日期: %{x}<br>累计盈亏: ¥%{y:,.0f}<extra></extra>"
+            hovertemplate="\u65e5\u671f: %{x}<br>\u7d2f\u8ba1\u76c8\u4e8f: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
-        # 累计手续费曲线。
+        # �??手续费曲线�??
         fig.add_trace(go.Scatter(
             x=comm_x, y=comm_y,
-            mode='lines', name='累计交易手续费', line=dict(color='#22c55e', width=2),
-            hovertemplate="日期: %{x}<br>累计手续费: ¥%{y:,.0f}<extra></extra>"
+            mode='lines', name='\u7d2f\u8ba1\u4ea4\u6613\u624b\u7eed\u8d39', line=dict(color='#22c55e', width=2),
+            hovertemplate="\u65e5\u671f: %{x}<br>\u7d2f\u8ba1\u624b\u7eed\u8d39: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
         fig.data[0].x = plot_x
@@ -790,14 +835,14 @@ class StrategyAnalyzer:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 
             yaxis=dict(
-                title=dict(text="累计盈亏 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u7d2f\u8ba1\u76c8\u4e8f (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 showgrid=True,
                 gridcolor='#f3f4f6'
             ),
 
             yaxis2=dict(
-                title=dict(text="累计手续费 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u7d2f\u8ba1\u624b\u7eed\u8d39 (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 anchor="x",
                 overlaying="y",
@@ -812,17 +857,17 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_net_value_with_benchmark_html_div(self):
-        """生成净值曲线与基准对比 HTML div"""
+        """\u751f\u6210\u51c0\u503c\u66f2\u7ebf\u4e0e\u57fa\u51c6\u5bf9\u6bd4 HTML div\u3002"""
         equity_x, equity_y = self._get_equity_series()
         if not equity_y:
-            return "<div class='text-center text-gray-500 py-10'>无资金数据</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u8d44\u91d1\u6570\u636e</div>"
 
-        # 1. 计算策略绝对净值
+        # 1. 计算策略绝�?�?�?
         strategy_nv = [val / self.initial_capital for val in equity_y]
         time_axis = _build_continuous_time_axis(equity_x)
         plot_x, time_labels = _map_to_continuous_time_axis(equity_x, time_axis)
 
-        # 2. 提取底层价格，计算等权基准净值 (Buy & Hold)
+        # 2. 提取底层价格，�?算等权基准净�?(Buy & Hold)
         df_price = self.price_df.copy()
         if isinstance(df_price.columns, pd.MultiIndex):
             if 'close' in df_price.columns.levels[0]:
@@ -836,12 +881,12 @@ class StrategyAnalyzer:
 
         # 对齐时间轴与计算
         if not close_df.empty:
-            # 每个品种从自己的第一条有效价格归一化，避免未上市品种的 NaN 扭曲基准。
+            # 每个品�?从自己的�?��条有效价格归�?化，避免�?��市品种的 NaN �?��基准�?
             norm_df = close_df.apply(lambda col: col / col.dropna().iloc[0] if not col.dropna().empty else col)
-            # 等权均值会自动忽略 NaN，用于模拟动态等权买入持有基准。
+            # 等权均�?�会�?��忽略 NaN，用于模拟动态等权买入持有基准�??
             benchmark_nv = norm_df.mean(axis=1)
 
-            # 对齐到动态权益的时间轴
+            # 对齐到动态权益的时间�?
             bench_series = pd.Series(benchmark_nv.values, index=pd.to_datetime(close_df.index))
             bench_series = bench_series[~bench_series.index.duplicated(keep='last')]
             idx = pd.to_datetime(equity_x)
@@ -852,19 +897,19 @@ class StrategyAnalyzer:
 
         fig = go.Figure()
 
-        # 策略净值。
+        # 策略�?值�??
         fig.add_trace(go.Scatter(
             x=equity_x, y=strategy_nv,
-            mode='lines', name='策略净值', line=dict(color='#3b82f6', width=2),
+            mode='lines', name='\u7b56\u7565\u51c0\u503c', line=dict(color='#3b82f6', width=2),
             fill='tozeroy', fillcolor='rgba(59,130,246,0.1)',
-            hovertemplate="日期: %{x}<br>策略净值: %{y:.4f}<extra></extra>"
+            hovertemplate="\u65e5\u671f: %{x}<br>\u7b56\u7565\u51c0\u503c: %{y:.4f}<extra></extra>"
         ))
 
-        # 等权买入持有基准净值。
+        # 等权买入持有基准�?值�??
         fig.add_trace(go.Scatter(
             x=equity_x, y=bench_y,
             mode='lines', name='等权买入持有基准', line=dict(color='#f59e0b', width=2, dash='dash'),
-            hovertemplate="日期: %{x}<br>基准净值: %{y:.4f}<extra></extra>"
+            hovertemplate="\u65e5\u671f: %{x}<br>\u57fa\u51c6\u51c0\u503c: %{y:.4f}<extra></extra>"
         ))
 
         fig.data[0].x = plot_x
@@ -882,7 +927,7 @@ class StrategyAnalyzer:
             hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             yaxis=dict(
-                title=dict(text="净值", font=dict(color="#1f2937")),
+                title=dict(text="\u51c0\u503c", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 showgrid=True,
                 gridcolor='#f3f4f6'
@@ -894,15 +939,15 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_rolling_drawdown_html_div(self):
-        """生成滚动回撤 (Rolling Drawdown) 时序折线图"""
+        """\u751f\u6210\u6eda\u52a8\u56de\u64a4 (Rolling Drawdown) \u65f6\u5e8f\u6298\u7ebf\u56fe\u3002"""
         if getattr(self, 'equity_df', None) is None or self.equity_df.empty:
-            return "<div class='text-center text-gray-500 py-10'>无资金数据，无法计算滚动回撤</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u8d44\u91d1\u6570\u636e\uff0c\u65e0\u6cd5\u8ba1\u7b97\u6eda\u52a8\u56de\u64a4</div>"
 
         df_eq = self.equity_df.sort_values('datetime').copy()
 
-        # 1. 计算滚动最高点及回撤比例
+        # 1. 计算滚动�?高点及回撤比�?
         peak = df_eq['equity'].cummax()
-        # 转为普通 list，避免 Plotly 把 pandas 索引误读为坐标。
+        # �?���???list，避�?Plotly �?pandas 索引�??为坐标�??
         drawdown_y = ((df_eq['equity'] - peak) / peak).tolist()
         drawdown_x = df_eq['datetime'].tolist()
         time_axis = _build_continuous_time_axis(drawdown_x)
@@ -911,7 +956,7 @@ class StrategyAnalyzer:
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=drawdown_x, y=drawdown_y,
-            mode='lines', name='动态回撤',
+            mode='lines', name='\u52a8\u6001\u56de\u64a4',
             line=dict(color='#dc2626', width=1.5),
             fill='tozeroy', fillcolor='rgba(220,38,38,0.08)',
             hovertemplate="日期: %{x}<br>回撤幅度: %{y:.2%}<extra></extra>"
@@ -928,7 +973,7 @@ class StrategyAnalyzer:
             yaxis=dict(
                 title=dict(text="回撤幅度", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
-                tickformat=".2%",  # 恢复百分比格式
+                tickformat=".2%",  # 恢�?百分比格�?
                 showgrid=True,
                 gridcolor='#f3f4f6'
             )
@@ -938,17 +983,17 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_leverage_and_position_html_div(self):
-        """还原每日历史仓位状态机，生成多空持仓名义本金与隔夜杠杆率双轴图"""
+        """\u8fd8\u539f\u6bcf\u65e5\u5386\u53f2\u4ed3\u4f4d\u72b6\u6001\uff0c\u751f\u6210\u591a\u7a7a\u6301\u4ed3\u540d\u4e49\u672c\u91d1\u4e0e\u9694\u591c\u6760\u6746\u7387\u53cc\u8f74\u56fe\u3002"""
         if not self.trades or getattr(self, 'equity_df', None) is None or self.equity_df.empty:
-            return "<div class='text-center text-gray-500 py-10'>持仓或权益数据不足，无法计算杠杆率</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u6301\u4ed3\u6216\u6743\u76ca\u6570\u636e\u4e0d\u8db3\uff0c\u65e0\u6cd5\u8ba1\u7b97\u6760\u6746\u7387</div>"
 
-        # 1. 建立每日持仓时间流
+        # 1. 建立每日持仓时间�?
         from collections import defaultdict
         df_eq = self.equity_df.sort_values('datetime').copy()
         df_eq['date'] = pd.to_datetime(df_eq['datetime']).dt.date
         date_list = sorted(df_eq['date'].unique())
 
-        # 整理所有交易流水
+        # 整理�?有交易流�?
         trade_records = []
         for t in self.trades:
             trade_records.append({
@@ -962,24 +1007,24 @@ class StrategyAnalyzer:
             })
         df_trades = pd.DataFrame(trade_records).sort_values('time') if trade_records else pd.DataFrame()
 
-        # 2. 状态机动态模拟每日持仓量
+        # 2. 状�?�机动�?�模拟每日持仓量
         daily_positions = {}
-        current_pos = defaultdict(int)  # 符号代表方向：正为多，负为空
+        current_pos = defaultdict(int)  # 符号代表方向：�?为�?，负为空
 
-        # 建立价格字典加速查找
+        # 建立价格字典加�?�查�?
         price_records = []
-        # 解析 price_df 宽表中的收盘价
+        # 解析 price_df 宽表�?��收盘�?
         for dt, row in self.price_df.iterrows():
             d = dt.date()
             p_dict = {}
             for col in self.price_df.columns:
                 if isinstance(col, tuple):
                     if col[0] in ['close', 'last_price']:
-                        import re
-                        m = re.search(r'\((.*?)\)', col[1])
-                        if m: p_dict[m.group(1).lower()] = row[col]
+                        for key in _symbol_price_lookup_keys(col[1]):
+                            p_dict[key] = row[col]
                 else:
-                    p_dict[str(col).lower()] = row[col]
+                    for key in _symbol_price_lookup_keys(col):
+                        p_dict[key] = row[col]
             price_records.append({'date': d, 'prices': p_dict})
         daily_prices = {r['date']: r['prices'] for r in price_records}
 
@@ -987,7 +1032,7 @@ class StrategyAnalyzer:
         daily_short_val = []
         daily_leverage = []
 
-        # 线性步进回溯每一天
+        # 线�?��?进回�?���?�?
         for d in date_list:
             if not df_trades.empty:
                 day_trades = df_trades[df_trades['date'] == d]
@@ -1003,9 +1048,9 @@ class StrategyAnalyzer:
                         if t['direction'] == Direction.LONG:
                             current_pos[sym] += vol  # 平空仓位增加
                         else:
-                            current_pos[sym] -= vol  # 平多仓位减少
+                            current_pos[sym] -= vol  # 平�?仓位减少
 
-            # 计算当天的名义市值
+            # 计算当天的名义市�?
             p_map = daily_prices.get(d, {})
             long_v = 0.0
             short_v = 0.0
@@ -1013,7 +1058,11 @@ class StrategyAnalyzer:
             for sym, vol in current_pos.items():
                 if vol == 0: continue
                 mult = _lookup_multiplier(sym)
-                c_price = p_map.get(sym.lower(), 0.0)
+                c_price = 0.0
+                for key in _symbol_price_lookup_keys(sym):
+                    c_price = p_map.get(key, 0.0)
+                    if c_price != 0.0:
+                        break
                 if c_price == 0.0: continue
 
                 if vol > 0:
@@ -1022,35 +1071,35 @@ class StrategyAnalyzer:
                     short_v += abs(vol) * c_price * mult
 
             daily_long_val.append(long_v)
-            daily_short_val.append(-short_v)  # 空头名义本金转为负数用于条形图向下堆叠
+            daily_short_val.append(-short_v)  # 空头名义�?���?��负数用于条形图向下堆�?
 
-            # 查找当天的权益
+            # 查找当天的权�?
             day_equity = df_eq[df_eq['date'] == d]['equity'].iloc[-1]
             total_nominal = long_v + short_v
             daily_leverage.append(total_nominal / day_equity if day_equity > 0 else 0.0)
 
-        # 3. 开启 Plotly 机构级双轴渲染
+        # 3. �?�?Plotly 机构级双轴渲�?
         fig = go.Figure()
 
-        # 多头总敞口 (上方条形图)
+        # 多头总敞�?(上方条形�?
         fig.add_trace(go.Bar(
             x=df_eq['datetime'], y=daily_long_val,
-            name='多头总敞口', marker_color='rgba(239, 68, 68, 0.6)', yaxis='y1',
-            hovertemplate="日期: %{x}<br>多头持仓名义价值: ¥%{y:,.0f}<extra></extra>"
+            name='\u591a\u5934\u603b\u655e\u53e3', marker_color='rgba(239, 68, 68, 0.6)', yaxis='y1',
+            hovertemplate="\u65e5\u671f: %{x}<br>\u591a\u5934\u6301\u4ed3\u540d\u4e49\u4ef7\u503c: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
-        # 空头总敞口 (下方条形图)
+        # 空头总敞�?(下方条形�?
         fig.add_trace(go.Bar(
             x=df_eq['datetime'], y=daily_short_val,
-            name='空头总敞口', marker_color='rgba(34, 197, 94, 0.6)', yaxis='y1',
-            hovertemplate="日期: %{x}<br>空头持仓名义价值: ¥%{y:,.0f}<extra></extra>"
+            name='\u7a7a\u5934\u603b\u655e\u53e3', marker_color='rgba(34, 197, 94, 0.6)', yaxis='y1',
+            hovertemplate="\u65e5\u671f: %{x}<br>\u7a7a\u5934\u6301\u4ed3\u540d\u4e49\u4ef7\u503c: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
-        # 隔夜总杠杆率 (覆盖折线) - 绑定到副轴 y2
+        # 隔�?总杠杆率 (覆盖折线) - 绑定到副�?y2
         fig.add_trace(go.Scatter(
             x=df_eq['datetime'], y=daily_leverage,
-            mode='lines', name='隔夜总杠杆率', line=dict(color='#111827', width=2), yaxis='y2',
-            hovertemplate="日期: %{x}<br>实际隔夜杠杆率: %{y:.2f} 倍<extra></extra>"
+            mode='lines', name='\u9694\u591c\u603b\u6760\u6746\u7387', line=dict(color='#111827', width=2), yaxis='y2',
+            hovertemplate="\u65e5\u671f: %{x}<br>\u5b9e\u9645\u9694\u591c\u6760\u6746\u7387: %{y:.2f} \u500d<extra></extra>"
         ))
 
         fig.update_layout(
@@ -1059,14 +1108,14 @@ class StrategyAnalyzer:
             hovermode="x unified", barmode='relative',
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
 
-            # 主轴：总敞口名义本金
+            # 主轴：�?�敞口名义本�?
             yaxis=dict(
-                title=dict(text="名义持仓本金 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u540d\u4e49\u6301\u4ed3\u672c\u91d1 (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937")),
 
-            # 副轴：实际杠杆率
+            # �?��：实际杠杆率
             yaxis2=dict(
-                title=dict(text="实际隔夜杠杆率 (倍)", font=dict(color="#1f2937")),
+                title=dict(text="\u5b9e\u9645\u9694\u591c\u6760\u6746\u7387 (\u500d)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 anchor="x", overlaying="y", side="right", showgrid=False,
                 tickformat=".2f"
@@ -1077,28 +1126,28 @@ class StrategyAnalyzer:
     def get_multi_asset_pnl_bar_html_div(self):
         """生成多品种按盈亏从高到低排序的垂直直方图 (#11)"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty or self.symbol != 'MULTI':
-            return "<div class='text-center text-gray-500 py-10'>非多品种组合或无交易数据，不生成品种盈亏直方图</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u975e\u591a\u54c1\u79cd\u7ec4\u5408\u6216\u65e0\u4ea4\u6613\u6570\u636e\uff0c\u4e0d\u751f\u6210\u54c1\u79cd\u76c8\u4e8f\u76f4\u65b9\u56fe</div>"
 
         # 1. 按品种聚合盈亏并严格降序排列
         asset_stats = self.match_df.groupby('symbol')['net_pnl'].sum().sort_values(ascending=False)
 
-        # 转为普通 Python 列表，避免 Plotly 误读 pandas 索引。
+        # �?���???Python 列表，避�?Plotly �?? pandas 索引�?
         symbols = [str(sym).upper() for sym in asset_stats.index]
         pnls = [float(val) for val in asset_stats.values]
 
-        # 盈利为红，亏损为绿 (国内期货标准)
+        # 盈利为红，亏损为�?(国内期货标准)
         colors = ['#dc2626' if val > 0 else '#16a34a' for val in pnls]
 
         fig = go.Figure()
 
-        # 显式指定 x 和 y，确保输出为标准垂直柱状图。
+        # 显式指定 x �?y，确保输出为标准垂直柱状图�??
         fig.add_trace(go.Bar(
             x=symbols,
             y=pnls,
             marker_color=colors,
-            text=[f"{val / 10000:.0f}万" for val in pnls],
+            text=[f"{val / 10000:.0f}?" for val in pnls],
             textposition='auto',
-            hovertemplate="合约: %{x}<br>累计净盈亏: ¥%{y:,.0f}<extra></extra>"
+            hovertemplate="\u5408\u7ea6: %{x}<br>\u7d2f\u8ba1\u51c0\u76c8\u4e8f: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
         fig.update_layout(
@@ -1107,7 +1156,7 @@ class StrategyAnalyzer:
             hovermode="x unified",
             showlegend=False,
             yaxis=dict(
-                title=dict(text="累计净盈亏 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u7d2f\u8ba1\u51c0\u76c8\u4e8f (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 showgrid=True, gridcolor='#f3f4f6'
             ),
@@ -1116,9 +1165,9 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_holding_period_pie_html_div(self):
-        """生成独立的持仓周期占比饼图"""
+        """\u751f\u6210\u4ea4\u6613\u7684\u6301\u4ed3\u5468\u671f\u5360\u6bd4\u997c\u56fe\u3002"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty:
-            return "<div class='text-center text-gray-500 py-10'>无交易明细</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u4ea4\u6613\u660e\u7ec6</div>"
 
         df_match = self.match_df.copy()
 
@@ -1132,31 +1181,31 @@ class StrategyAnalyzer:
 
             def _categorize_days(days):
                 if days <= 0:
-                    return "同日成交 (0天)"
+                    return "\u540c\u65e5\u6210\u4ea4 (0\u5929)"
                 if days <= 5:
-                    return "短线 (1-5天)"
+                    return "\u77ed\u7ebf (1-5\u5929)"
                 if days <= 15:
-                    return "中线 (6-15天)"
-                return "长线 (>15天)"
+                    return "\u4e2d\u7ebf (6-15\u5929)"
+                return "\u957f\u7ebf (>15\u5929)"
 
             df_match['duration_class'] = hold_days.apply(_categorize_days)
-            order = ["同日成交 (0天)", "短线 (1-5天)", "中线 (6-15天)", "长线 (>15天)"]
+            order = ["\u540c\u65e5\u6210\u4ea4 (0\u5929)", "\u77ed\u7ebf (1-5\u5929)", "\u4e2d\u7ebf (6-15\u5929)", "\u957f\u7ebf (>15\u5929)"]
         else:
             hold_minutes = (df_match['close_time'] - df_match['open_time']).dt.total_seconds() / 60.0
 
             def _categorize_minutes(mins):
                 if mins <= 5.0:
-                    return "高频 (≤5分钟)"
+                    return "\u9ad8\u9891 (\u5c0f\u4e8e5\u5206\u949f)"
                 if mins <= 24 * 60.0:
-                    return "日内 (5分-1天)"
+                    return "\u65e5\u5185 (5\u5206\u949f-1\u5929)"
                 if mins <= 5 * 24 * 60.0:
-                    return "短线 (1-5天)"
+                    return "\u77ed\u7ebf (1-5\u5929)"
                 if mins <= 15 * 24 * 60.0:
-                    return "中线 (5-15天)"
-                return "长线 (>15天)"
+                    return "\u4e2d\u7ebf (5-15\u5929)"
+                return "\u957f\u7ebf (>15\u5929)"
 
             df_match['duration_class'] = hold_minutes.apply(_categorize_minutes)
-            order = ["高频 (≤5分钟)", "日内 (5分-1天)", "短线 (1-5天)", "中线 (5-15天)", "长线 (>15天)"]
+            order = ["\u9ad8\u9891 (\u5c0f\u4e8e5\u5206\u949f)", "\u65e5\u5185 (5\u5206\u949f-1\u5929)", "\u77ed\u7ebf (1-5\u5929)", "\u4e2d\u7ebf (5-15\u5929)", "\u957f\u7ebf (>15\u5929)"]
         duration_counts = df_match['duration_class'].value_counts().reindex(order).dropna()
 
         fig = go.Figure(data=[go.Pie(
@@ -1178,7 +1227,7 @@ class StrategyAnalyzer:
         """Generate trade-notional allocation from actual fills; color encodes symbol PnL."""
         turnover_events = self._get_turnover_events()
         if turnover_events.empty:
-            return "<div class='text-center text-gray-500 py-10'>无交易明细</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u4ea4\u6613\u660e\u7ec6</div>"
 
         turnover_stats = turnover_events.groupby('symbol')['turnover'].sum().sort_values(ascending=False)
         pnl_by_symbol = self._get_symbol_total_pnl()
@@ -1248,10 +1297,10 @@ class StrategyAnalyzer:
                 ),
                 hovertemplate=(
                     "合约/板块: %{label}<br>"
-                    "所属板块: %{customdata[0]}<br>"
-                    "交易市值: ¥%{customdata[1]:,.0f}<br>"
-                    "市值占比: %{customdata[2]:.2f}%<br>"
-                    "净收益: ¥%{customdata[3]:,.0f}<extra></extra>"
+                    "\u6240\u5c5e\u677f\u5757: %{customdata[0]}<br>"
+                    "\u4ea4\u6613\u5e02\u503c: \u00a5%{customdata[1]:,.0f}<br>"
+                    "\u5e02\u503c\u5360\u6bd4: %{customdata[2]:.2f}%<br>"
+                    "\u51c0\u6536\u76ca: \u00a5%{customdata[3]:,.0f}<extra></extra>"
                 ),
             )])
 
@@ -1276,9 +1325,9 @@ class StrategyAnalyzer:
             marker=dict(colors=[_pnl_to_color(float(pnl), max_abs_pnl) for pnl in df_turnover["net_pnl"]]),
             hovertemplate=(
                 "合约: %{label}<br>"
-                "交易市值: ¥%{customdata[0]:,.0f}<br>"
-                "市值占比: %{customdata[1]:.2f}%<br>"
-                "净收益: ¥%{customdata[2]:,.0f}<extra></extra>"
+                "\u4ea4\u6613\u5e02\u503c: \u00a5%{customdata[0]:,.0f}<br>"
+                "\u5e02\u503c\u5360\u6bd4: %{customdata[1]:.2f}%<br>"
+                "\u51c0\u6536\u76ca: \u00a5%{customdata[2]:,.0f}<extra></extra>"
             ),
         )])
 
@@ -1290,9 +1339,9 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_multi_asset_pnl_curves_html_div(self):
-        """生成多品种累计盈亏曲线，支持全部品种和板块合计视图。"""
+        """\u751f\u6210\u591a\u54c1\u79cd\u7d2f\u8ba1\u76c8\u4e8f\u66f2\u7ebf\uff0c\u9ed8\u8ba4\u5168\u90e8\u54c1\u79cd\uff0c\u5e76\u652f\u6301\u677f\u5757\u5408\u8ba1\u89c6\u56fe\u3002"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty or self.symbol != 'MULTI':
-            return "<div class='text-center text-gray-500 py-10'>无多品种交易流水</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u591a\u54c1\u79cd\u4ea4\u6613\u6d41\u6c34</div>"
 
         df = self.match_df.copy()
         df['close_time'] = pd.to_datetime(df['close_time'])
@@ -1350,7 +1399,7 @@ class StrategyAnalyzer:
                 x=cum_pnl.index.strftime('%Y-%m-%d').tolist(),
                 y=cum_pnl.tolist(),
                 mode='lines',
-                name=f'{sector} 合计',
+                name=f'{sector} \u5408\u8ba1',
                 line=dict(width=3),
                 legendgroup=f"sector_total:{sector}",
                 visible=False,
@@ -1358,7 +1407,7 @@ class StrategyAnalyzer:
                 hovertemplate=(
                     "板块: %{customdata}<br>"
                     "日期: %{x}<br>"
-                    "板块累计盈亏: ¥%{y:,.0f}<extra></extra>"
+                    "\u677f\u5757\u7d2f\u8ba1\u76c8\u4e8f: \u00a5%{y:,.0f}<extra></extra>"
                 )
             ))
             trace_meta.append({"sector": sector, "kind": "sector"})
@@ -1385,14 +1434,14 @@ class StrategyAnalyzer:
                     f"合约: {sym_label}<br>"
                     "板块: %{customdata}<br>"
                     "日期: %{x}<br>"
-                    "累计盈亏: ¥%{y:,.0f}<extra></extra>"
+                    "\u7d2f\u8ba1\u76c8\u4e8f: \u00a5%{y:,.0f}<extra></extra>"
                 )
             ))
             trace_meta.append({"sector": sector, "kind": "symbol", "symbol": sym_label})
 
         view_buttons = [
             dict(
-                label="全部品种",
+                label="\u5168\u90e8\u54c1\u79cd",
                 method="update",
                 args=[
                     {"visible": [item["kind"] == "symbol" for item in trace_meta]},
@@ -1400,7 +1449,7 @@ class StrategyAnalyzer:
                 ],
             ),
             dict(
-                label="板块合计",
+                label="\u677f\u5757\u5408\u8ba1",
                 method="update",
                 args=[
                     {"visible": [item["kind"] == "sector" for item in trace_meta]},
@@ -1438,21 +1487,21 @@ class StrategyAnalyzer:
                 font=dict(size=10),
             ),
             yaxis=dict(
-                title=dict(text="累计净盈亏 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u7d2f\u8ba1\u76c8\u4e8f (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"), showgrid=True, gridcolor='#f3f4f6'
             )
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_pnl_distribution_html_div(self):
-        """生成逐笔净盈亏分布图，纵轴为交易笔数占比。"""
+        """\u751f\u6210\u9010\u7b14\u51c0\u76c8\u4e8f\u5206\u5e03\u56fe\uff0c\u7eb5\u8f74\u4e3a\u4ea4\u6613\u7b14\u6570\u5360\u6bd4\u3002"""
         if getattr(self, 'match_df', None) is None or self.match_df.empty:
-            return "<div class='text-center text-gray-500 py-10'>无交易明细</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u4ea4\u6613\u660e\u7ec6</div>"
 
         df = self.match_df.copy()
         pnl_values = pd.to_numeric(df['net_pnl'], errors='coerce').dropna().to_numpy(dtype=float)
         if pnl_values.size == 0:
-            return "<div class='text-center text-gray-500 py-10'>无有效盈亏数据</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u6709\u6548\u76c8\u4e8f\u6570\u636e</div>"
 
         def _build_side_bins(values: np.ndarray, side: str) -> list[dict]:
             if values.size == 0:
@@ -1521,7 +1570,7 @@ class StrategyAnalyzer:
             marker_color=[row["color"] for row in rows],
             customdata=[row["customdata"] for row in rows],
             hovertemplate=(
-                "净盈亏区间: ¥%{customdata[0]:,.0f} 至 ¥%{customdata[1]:,.0f}<br>"
+                "\u51c0\u76c8\u4e8f\u533a\u95f4: \u00a5%{customdata[0]:,.0f} \u81f3 \u00a5%{customdata[1]:,.0f}<br>"
                 "交易笔数: %{customdata[2]}<br>"
                 "交易占比: %{y:.2f}%<extra></extra>"
             ),
@@ -1531,7 +1580,7 @@ class StrategyAnalyzer:
             height=350, margin=dict(l=10, r=10, t=30, b=10),
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
             xaxis=dict(
-                title=dict(text="逐笔净盈亏区间 (¥)", font=dict(color="#1f2937")),
+                title=dict(text="\u9010\u7b14\u51c0\u76c8\u4e8f\u533a\u95f4 (\u00a5)", font=dict(color="#1f2937")),
                 tickfont=dict(color="#1f2937"),
                 zeroline=False
             ),
@@ -1546,9 +1595,9 @@ class StrategyAnalyzer:
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_period_returns_html_div(self):
-        """生成多周期收益条形图 (#7)，支持周、月、年切换。"""
+        """\u751f\u6210\u591a\u5468\u671f\u6536\u76ca\u6761\u5f62\u56fe\uff0c\u652f\u6301\u5468\u3001\u6708\u3001\u5e74\u5207\u6362\u3002"""
         if getattr(self, 'equity_df', None) is None or self.equity_df.empty:
-            return "<div class='text-center text-gray-500 py-10'>无资金数据</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u8d44\u91d1\u6570\u636e</div>"
 
         df_eq = self.equity_df.copy()
         df_eq['datetime'] = pd.to_datetime(df_eq['datetime'])
@@ -1567,57 +1616,57 @@ class StrategyAnalyzer:
                 prev_eq = eq
             return labels, returns, colors
 
-        # 周收益使用标准日期字符串，避免 Plotly 把周标签当作不可解析类别。
+        # 周收益使用标准日期字符串，避�?Plotly 把周标�?当作不可解析类别�?
         w_labels, w_rets, w_colors = _calc_returns('W-FRI', '%Y-%m-%d')
         m_labels, m_rets, m_colors = _calc_returns('ME', '%Y-%m')
         y_labels, y_rets, y_colors = _calc_returns('YE', '%Y')
 
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=w_labels, y=w_rets, marker_color=w_colors, visible=False, name='周收益',
-                             hovertemplate="截止周五: %{x}<br>收益率: %{y:.2%}<extra></extra>"))
-        fig.add_trace(go.Bar(x=m_labels, y=m_rets, marker_color=m_colors, visible=True, name='月收益',
-                             hovertemplate="月份: %{x}<br>收益率: %{y:.2%}<extra></extra>"))
-        fig.add_trace(go.Bar(x=y_labels, y=y_rets, marker_color=y_colors, visible=False, name='年收益',
-                             hovertemplate="年份: %{x}<br>收益率: %{y:.2%}<extra></extra>"))
+        fig.add_trace(go.Bar(x=w_labels, y=w_rets, marker_color=w_colors, visible=False, name='\u5468\u6536\u76ca',
+                             hovertemplate="\u5f53\u5468\u5468\u4e94: %{x}<br>\u6536\u76ca\u7387: %{y:.2%}<extra></extra>"))
+        fig.add_trace(go.Bar(x=m_labels, y=m_rets, marker_color=m_colors, visible=True, name='\u6708\u6536\u76ca',
+                             hovertemplate="\u6708\u4efd: %{x}<br>\u6536\u76ca\u7387: %{y:.2%}<extra></extra>"))
+        fig.add_trace(go.Bar(x=y_labels, y=y_rets, marker_color=y_colors, visible=False, name='\u5e74\u6536\u76ca',
+                             hovertemplate="\u5e74\u4efd: %{x}<br>\u6536\u76ca\u7387: %{y:.2%}<extra></extra>"))
 
-        # 周/月/年切换按钮放在图表左上角，避开右上角 modebar。
+        # �?�?年切换按�?��在图表左上�?，避�?右上�?modebar�?
         fig.update_layout(
             updatemenus=[dict(
                 type="buttons", direction="right", active=1,
                 x=0.0, y=1.15, xanchor="left", yanchor="top",  # 坐标定在左上
                 buttons=list([
-                    dict(label="周收益 (Weekly)", method="update", args=[{"visible": [True, False, False]}]),
-                    dict(label="月收益 (Monthly)", method="update", args=[{"visible": [False, True, False]}]),
-                    dict(label="年收益 (Yearly)", method="update", args=[{"visible": [False, False, True]}])
+                    dict(label="\u5468\u6536\u76ca (Weekly)", method="update", args=[{"visible": [True, False, False]}]),
+                    dict(label="\u6708\u6536\u76ca (Monthly)", method="update", args=[{"visible": [False, True, False]}]),
+                    dict(label="\u5e74\u6536\u76ca (Yearly)", method="update", args=[{"visible": [False, False, True]}])
                 ]),
                 pad={"r": 10, "t": 10}, showactive=True, bgcolor="#f3f4f6", bordercolor="#d1d5db"
             )],
-            height=350, margin=dict(l=10, r=10, t=50, b=10),  # 增加顶部边距给按钮留出空间
+            height=350, margin=dict(l=10, r=10, t=50, b=10),  # 增加顶部边距给按�?��出空�?
             paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', hovermode="x unified",
-            yaxis=dict(title=dict(text="区间收益率", font=dict(color="#1f2937")), tickformat=".1%", showgrid=True,
+            yaxis=dict(title=dict(text="\u533a\u95f4\u6536\u76ca\u7387", font=dict(color="#1f2937")), tickformat=".1%", showgrid=True,
                        gridcolor='#f3f4f6'),
             xaxis=dict(tickfont=dict(size=10), tickangle=-45)
         )
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
     def get_replay_charts_dict(self):
-        """生成单品种价格曲线与买卖点复盘图的 HTML Div 字典 (#8)"""
+        """\u751f\u6210\u5355\u54c1\u79cd\u4ef7\u683c\u66f2\u7ebf\u4e0e\u4e70\u5356\u70b9\u590d\u76d8\u56fe HTML Div \u5b57\u5178\u3002"""
         if not self.trades or getattr(self, 'price_df', None) is None or self.price_df.empty:
             return {}
 
         replay_dicts = {}
-        # 提取所有交易过的品种，去重并排序
+        # 提取�?有交易过的品种，去重并排�?
         traded_symbols = sorted(list(set([t.symbol.lower() for t in self.trades])))
 
-        # 日期转为普通列表，避免 Plotly 把 pandas 索引当作价格序列。
+        # 日期�?���??�列�?��避免 Plotly �?pandas 索引当作价格序列�?
         if 'datetime' in self.price_df.columns:
             dates = pd.to_datetime(self.price_df['datetime']).tolist()
         else:
             dates = pd.to_datetime(self.price_df.index).tolist()
 
         for sym in traded_symbols:
-            # 精确找到当前品种的价格列，只允许 close / last_price 等价格字段。
-            # 不能在整个宽表里模糊匹配，否则容易把 volume/open_interest 当成价格线。
+            # 精确找到当前品�?的价格列，只允�? close / last_price 等价格字段�??
+            # 不能在整�??表里模糊匹配，否则�?易把 volume/open_interest 当成价格线�??
             candidates = []
             for col in self.price_df.columns:
                 if col == 'datetime':
@@ -1627,12 +1676,13 @@ class StrategyAnalyzer:
                 if field not in PRICE_FIELD_PRIORITY:
                     continue
 
-                code = _extract_product_code_from_label(_symbol_label_from_column(col))
-                if code == sym:
-                    candidates.append((PRICE_FIELD_PRIORITY.index(field), col, field))
+                keys = _symbol_price_lookup_keys(_symbol_label_from_column(col))
+                if sym in keys:
+                    exact_rank = 0 if keys and keys[0] == sym else 1
+                    candidates.append((exact_rank, PRICE_FIELD_PRIORITY.index(field), col, field))
 
             if candidates:
-                _, sym_col, price_field = sorted(candidates, key=lambda item: item[0])[0]
+                _, _, sym_col, price_field = sorted(candidates, key=lambda item: (item[0], item[1]))[0]
             else:
                 sym_col = None
                 price_field = 'close'
@@ -1640,47 +1690,47 @@ class StrategyAnalyzer:
             if sym_col is None:
                 continue
 
-            # 价格列强制转为 float，避免 pd.NA 让 Plotly 误判为类别或行号序列。
+            # 价格列强制转�?float，避�?pd.NA �?Plotly �?��为类�?��行号序列�?
             prices = pd.to_numeric(self.price_df[sym_col], errors='coerce').tolist()
             price_label = _price_field_label(price_field)
             sym_label = sym.upper()
 
             fig = go.Figure()
-            # 1. 绘制底层价格主线。
+            # 1. 绘制底层价格主线�?
             fig.add_trace(go.Scatter(
                 x=dates, y=prices, mode='lines', name=f'{sym_label} {price_label}',
                 line=dict(color='#9ca3af', width=1.5),
-                connectgaps=True,  # 忽略缺失值断点
-                hovertemplate=f"品种: {sym_label}<br>时间: %{{x}}<br>{price_label}: ¥%{{y:,.0f}}<extra></extra>"
+                connectgaps=True,  # 忽略缺失值断�?
+                hovertemplate=f"\u54c1\u79cd: {sym_label}<br>\u65f6\u95f4: %{{x}}<br>{price_label}: \u00a5%{{y:,.0f}}<extra></extra>"
             ))
 
-            # 2. 提取当前品种的开平仓坐标
+            # 2. 提取当前品�?的开平仓坐标
             sym_trades = [t for t in self.trades if t.symbol.lower() == sym]
 
-            ol_x, ol_y, ol_text = [], [], []  # 开多
-            cl_x, cl_y, cl_text = [], [], []  # 平多
-            os_x, os_y, os_text = [], [], []  # 开空
+            ol_x, ol_y, ol_text = [], [], []  # \u5f00\u591a
+            cl_x, cl_y, cl_text = [], [], []  # \u5e73\u591a
+            os_x, os_y, os_text = [], [], []  # \u5f00\u7a7a
             cs_x, cs_y, cs_text = [], [], []  # 平空
 
             for t in sym_trades:
 
-                txt = f"手数: {t.volume}<br>成交价: ¥{t.price:,.0f}"
+                txt = f"\u624b\u6570: {t.volume}<br>\u6210\u4ea4\u4ef7: \u00a5{t.price:,.0f}"
 
-                # Direction 表示订单买卖方向，Offset 表示开仓/平仓语义。
+                # Direction 表示订单买卖方向，Offset 表示�?�?平仓�?���?
 
-                # 1. 买入开仓 (Buy Open) = 开多
+                # 1. 买入�?�?(Buy Open) = �?�?
                 if t.direction == Direction.LONG and t.offset == Offset.OPEN:
                     ol_x.append(t.trade_time);
                     ol_y.append(float(t.price));
                     ol_text.append(txt)
 
-                # 2. 卖出平仓 (Sell Close) = 平多
+                # 2. 卖出平仓 (Sell Close) = 平�?
                 elif t.direction == Direction.SHORT and t.offset in [Offset.CLOSE, Offset.CLOSE_TODAY]:
                     cl_x.append(t.trade_time);
                     cl_y.append(float(t.price));
                     cl_text.append(txt)
 
-                # 3. 卖出开仓 (Sell Open) = 开空
+                # 3. 卖出�?�?(Sell Open) = �?�?
                 elif t.direction == Direction.SHORT and t.offset == Offset.OPEN:
                     os_x.append(t.trade_time);
                     os_y.append(float(t.price));
@@ -1691,39 +1741,39 @@ class StrategyAnalyzer:
                     cs_x.append(t.trade_time);
                     cs_y.append(float(t.price));
                     cs_text.append(txt)
-            # 3. 绘制买卖点图层 (极其符合国内投研直觉的图例)
+            # 3. 绘制买卖点图�?(极其符合国内投研直�?的图�?
             if ol_x:
-                # 开多 (买入开仓) -> 红色实心正三角
-                fig.add_trace(go.Scatter(x=ol_x, y=ol_y, mode='markers', name='开多 (Open Long)',
+                # �?�?(买入�?�? -> 红色实心正三�?
+                fig.add_trace(go.Scatter(x=ol_x, y=ol_y, mode='markers', name='\u5f00\u591a (Open Long)',
                                          marker=dict(symbol='triangle-up', size=13, color='#dc2626',
                                                      line=dict(width=1, color='white')),
                                          text=ol_text,
-                                         hovertemplate="<b>【开多】</b><br>时间: %{x}<br>%{text}<extra></extra>"))
+                                         hovertemplate="<b>\u3010\u5f00\u591a\u3011</b><br>\u65f6\u95f4: %{x}<br>%{text}<extra></extra>"))
             if cl_x:
-                # 平多 (卖出平仓) -> 绿色空心正方形
-                fig.add_trace(go.Scatter(x=cl_x, y=cl_y, mode='markers', name='平多 (Close Long)',
+                # 平�? (卖出平仓) -> 绿色空心正方�?
+                fig.add_trace(go.Scatter(x=cl_x, y=cl_y, mode='markers', name='\u5e73\u591a (Close Long)',
                                          marker=dict(symbol='square-open', size=11, color='#16a34a',
                                                      line=dict(width=2.5)),
                                          text=cl_text,
-                                         hovertemplate="<b>【平多】</b><br>时间: %{x}<br>%{text}<extra></extra>"))
+                                         hovertemplate="<b>\u3010\u5e73\u591a\u3011</b><br>\u65f6\u95f4: %{x}<br>%{text}<extra></extra>"))
             if os_x:
-                # 开空 (卖出开仓) -> 绿色实心倒三角
-                fig.add_trace(go.Scatter(x=os_x, y=os_y, mode='markers', name='开空 (Open Short)',
+                # �?�?(卖出�?�? -> 绿色实心倒三�?
+                fig.add_trace(go.Scatter(x=os_x, y=os_y, mode='markers', name='\u5f00\u7a7a (Open Short)',
                                          marker=dict(symbol='triangle-down', size=13, color='#16a34a',
                                                      line=dict(width=1, color='white')),
                                          text=os_text,
-                                         hovertemplate="<b>【开空】</b><br>时间: %{x}<br>%{text}<extra></extra>"))
+                                         hovertemplate="<b>\u3010\u5f00\u7a7a\u3011</b><br>\u65f6\u95f4: %{x}<br>%{text}<extra></extra>"))
             if cs_x:
-                # 平空 (买入平仓) -> 红色空心正方形
+                # 平空 (买入平仓) -> 红色空心正方�?
                 fig.add_trace(go.Scatter(x=cs_x, y=cs_y, mode='markers', name='平空 (Close Short)',
                                          marker=dict(symbol='square-open', size=11, color='#dc2626',
                                                      line=dict(width=2.5)),
                                          text=cs_text,
-                                         hovertemplate="<b>【平空】</b><br>时间: %{x}<br>%{text}<extra></extra>"))
+                                         hovertemplate="<b>\u3010\u5e73\u7a7a\u3011</b><br>\u65f6\u95f4: %{x}<br>%{text}<extra></extra>"))
 
             fig.update_layout(
                 title=dict(
-                    text=f"{sym_label} 交易复盘 | 价格线: {price_label}",
+                    text=f"{sym_label} \u4ea4\u6613\u590d\u76d8 | \u4ef7\u683c: {price_label}",
                     x=0.01,
                     xanchor='left',
                     font=dict(size=16, color='#1f2937')
@@ -1759,15 +1809,15 @@ class StrategyAnalyzer:
         df_eq = self.equity_df.copy()
         df_eq['datetime'] = pd.to_datetime(df_eq['datetime'])
         df_eq = df_eq.sort_values('datetime')
-        # 手续费必须按真实成交时间累计。不能先按日期汇总后 merge 到 tick 资金表，
-        # 否则同一天的手续费会在每一条 tick 权益记录上被重复 cumsum。
+        # 手续费必须按真实成交时间�??。不能先按日期汇总后 merge �?tick 资金�?��
+        # 否则同一天的手续费会在每�?�?tick 权益记录上�?重�? cumsum�?
         commission_events = self._get_commission_events()
         if not commission_events.empty:
             commission_timeline = (
                 commission_events
                 .sort_values('datetime')[['datetime', 'commission']]
-                .assign(累计手续费=lambda df: df['commission'].cumsum())
-                [['datetime', '累计手续费']]
+                .assign(cumulative_commission=lambda df: df['commission'].cumsum())
+                [['datetime', 'cumulative_commission']]
             )
             df_eq = pd.merge_asof(
                 df_eq,
@@ -1775,27 +1825,776 @@ class StrategyAnalyzer:
                 on='datetime',
                 direction='backward',
             )
-            df_eq['累计手续费'] = df_eq['累计手续费'].fillna(0.0)
+            df_eq['cumulative_commission'] = df_eq['cumulative_commission'].fillna(0.0)
         else:
-            df_eq['累计手续费'] = 0.0
+            df_eq['cumulative_commission'] = 0.0
 
-        # 组装最终呈现的表单格式
+        position_notional = (
+            pd.to_numeric(df_eq['position_notional'], errors='coerce').fillna(0.0).round(2)
+            if 'position_notional' in df_eq.columns else 0.0
+        )
+
         df_res = pd.DataFrame({
-            '时间': df_eq['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S'),
-            '动态权益': df_eq['equity'].round(2),
-            '累计盈亏': (df_eq['equity'] - self.initial_capital).round(2),
-            '累计手续费': df_eq['累计手续费'].round(2)
+            '\u65f6\u95f4': df_eq['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S'),
+            '\u52a8\u6001\u6743\u76ca': df_eq['equity'].round(2),
+            '\u6301\u4ed3\u540d\u4e49\u672c\u91d1': position_notional,
+            '\u7d2f\u8ba1\u76c8\u4e8f': (df_eq['equity'] - self.initial_capital).round(2),
+            '\u7d2f\u8ba1\u624b\u7eed\u8d39': df_eq['cumulative_commission'].round(2),
         })
         return df_res
 
+    def _signal_horizons(self) -> list[int]:
+        if self.freq == "1d":
+            return [1, 3, 5, 10, 20]
+        if self.freq == "tick":
+            return [1, 10, 50, 100, 500]
+        return [1, 3, 6, 12, 24]
+
+    def _get_signal_price_series_map(self) -> dict[str, pd.Series]:
+        if hasattr(self, "_signal_price_series_cache"):
+            return self._signal_price_series_cache
+
+        series_map = {}
+        if getattr(self, "price_df", None) is None or self.price_df.empty:
+            self._signal_price_series_cache = series_map
+            return series_map
+
+        if "datetime" in self.price_df.columns:
+            dt_index = pd.to_datetime(self.price_df["datetime"], errors="coerce")
+        else:
+            dt_index = pd.to_datetime(self.price_df.index, errors="coerce")
+
+        for col in self.price_df.columns:
+            if col == "datetime":
+                continue
+            field = _price_field_from_column(col)
+            if field not in PRICE_FIELD_PRIORITY:
+                continue
+
+            lookup_keys = _symbol_price_lookup_keys(_symbol_label_from_column(col))
+            values = pd.to_numeric(self.price_df[col], errors="coerce")
+            series = pd.Series(values.to_numpy(), index=dt_index).dropna()
+            if series.empty:
+                continue
+            series = series[~series.index.duplicated(keep="last")].sort_index()
+
+            priority = PRICE_FIELD_PRIORITY.index(field)
+            for code in lookup_keys:
+                existing = series_map.get(code)
+                if existing is None or priority < existing[0]:
+                    series_map[code] = (priority, series)
+
+        self._signal_price_series_cache = {code: item[1] for code, item in series_map.items()}
+        return self._signal_price_series_cache
+
+    def _raw_signal_events_df(self) -> pd.DataFrame:
+        if not self.signal_records:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(self.signal_records)
+        if df.empty or "datetime" not in df.columns or "symbol" not in df.columns:
+            return pd.DataFrame()
+
+        from config import trade_symbol_code
+
+        df = df.copy()
+        df["datetime"] = pd.to_datetime(df["datetime"], errors="coerce")
+        df = df.dropna(subset=["datetime", "symbol"])
+        df["symbol"] = df["symbol"].map(lambda value: trade_symbol_code(str(value)).lower())
+        df["signal"] = pd.to_numeric(df.get("signal"), errors="coerce")
+        df["signal"] = self._infer_effective_signal(df)
+        df["signal_score"] = self._infer_signal_score(df)
+        df = df.sort_values(["datetime", "symbol"]).reset_index(drop=True)
+        return df
+
+    @staticmethod
+    def _infer_effective_signal(df: pd.DataFrame) -> pd.Series:
+        """Infer signal direction for target-style intents that omit signal."""
+        signal = pd.to_numeric(df.get("signal"), errors="coerce")
+
+        def fill_from_signed_column(column: str):
+            nonlocal signal
+            if column not in df.columns:
+                return
+            values = pd.to_numeric(df[column], errors="coerce")
+            missing = signal.isna() & values.notna()
+            signal.loc[missing & (values > 0)] = 1
+            signal.loc[missing & (values < 0)] = -1
+            signal.loc[missing & (values == 0)] = 0
+
+        fill_from_signed_column("target_net")
+        fill_from_signed_column("target_weight")
+        fill_from_signed_column("target_margin_pct")
+
+        if "position_mode" in df.columns:
+            mode = df["position_mode"].astype(str).str.lower()
+            exit_mask = signal.isna() & mode.isin(["flat", "reduce", "exit", "close", "all_flat", "partial_close"])
+            signal.loc[exit_mask] = 0
+
+        return signal
+
+    @staticmethod
+    def _numeric_signal_column(df: pd.DataFrame, column: str) -> pd.Series:
+        if column not in df.columns:
+            return pd.Series(np.nan, index=df.index, dtype=float)
+        return pd.to_numeric(df[column], errors="coerce")
+
+    @staticmethod
+    def _infer_signal_score(df: pd.DataFrame) -> pd.Series:
+        """
+        Build a signed signal score for IC/Rank IC.
+
+        Explicit signed target fields are used first. For absolute sizing fields
+        such as size_scale or risk_pct, the effective signal direction supplies
+        the sign. If no strength field exists, the score falls back to -1/0/1.
+        """
+        signal = pd.to_numeric(df.get("signal"), errors="coerce")
+        explicit_score = StrategyAnalyzer._numeric_signal_column(df, "signal_score")
+        score = explicit_score.copy()
+        score.loc[score.isna()] = signal.loc[score.isna()]
+
+        for column in ("target_weight", "target_margin_pct", "target_net"):
+            values = StrategyAnalyzer._numeric_signal_column(df, column)
+            mask = values.notna() & explicit_score.isna()
+            score.loc[mask] = values.loc[mask]
+
+        for column in ("target_pct", "size_scale", "risk_pct", "target_volume", "delta_volume"):
+            values = StrategyAnalyzer._numeric_signal_column(df, column)
+            mask = values.notna() & signal.notna() & explicit_score.isna()
+            score.loc[mask] = signal.loc[mask] * values.loc[mask].abs()
+
+        return score
+
+    def _build_signal_diagnostics_df(self) -> pd.DataFrame:
+        if hasattr(self, "_signal_diagnostics_cache"):
+            return self._signal_diagnostics_cache.copy()
+
+        df = self._raw_signal_events_df()
+        if df.empty:
+            self._signal_diagnostics_cache = pd.DataFrame()
+            return pd.DataFrame()
+
+        horizons = self._signal_horizons()
+        for horizon in horizons:
+            df[f"fwd_{horizon}_bar_return"] = np.nan
+            df[f"fwd_{horizon}_bar_raw_return"] = np.nan
+        df["fwd_mfe_24_bar"] = np.nan
+        df["fwd_mae_24_bar"] = np.nan
+
+        price_map = self._get_signal_price_series_map()
+        entry_mask = df["signal"].isin([1, -1])
+
+        for sym, group in df.loc[entry_mask].groupby("symbol"):
+            price_series = price_map.get(sym)
+            if price_series is None or price_series.empty:
+                continue
+
+            signal_times = pd.to_datetime(group["datetime"])
+            indexer = price_series.index.get_indexer(signal_times)
+            missing = indexer < 0
+            if missing.any():
+                fallback = price_series.index.get_indexer(signal_times[missing], method="ffill")
+                indexer[missing] = fallback
+
+            prices = price_series.to_numpy(dtype=float)
+            valid_base = (indexer >= 0) & (indexer < len(prices)) & (prices[indexer] > 0)
+            if not valid_base.any():
+                continue
+
+            row_positions = group.index.to_numpy()
+            directions = group["signal"].to_numpy(dtype=float)
+
+            for horizon in horizons:
+                future_pos = indexer + horizon
+                valid = valid_base & (future_pos < len(prices))
+                if not valid.any():
+                    continue
+                raw_ret = prices[future_pos[valid]] / prices[indexer[valid]] - 1.0
+                directional_ret = directions[valid] * raw_ret
+                df.loc[row_positions[valid], f"fwd_{horizon}_bar_raw_return"] = raw_ret
+                df.loc[row_positions[valid], f"fwd_{horizon}_bar_return"] = directional_ret
+
+            mfe_values = []
+            mae_values = []
+            for pos, direction, valid in zip(indexer, directions, valid_base):
+                if not valid:
+                    mfe_values.append(np.nan)
+                    mae_values.append(np.nan)
+                    continue
+                end_pos = min(len(prices), int(pos) + 25)
+                path = prices[int(pos):end_pos]
+                path_ret = direction * (path / prices[int(pos)] - 1.0)
+                mfe_values.append(float(np.nanmax(path_ret)) if len(path_ret) else np.nan)
+                mae_values.append(float(np.nanmin(path_ret)) if len(path_ret) else np.nan)
+
+            df.loc[group.index, "fwd_mfe_24_bar"] = mfe_values
+            df.loc[group.index, "fwd_mae_24_bar"] = mae_values
+
+        self._signal_diagnostics_cache = df
+        return df.copy()
+
+    @staticmethod
+    def _fmt_pct_value(value) -> str:
+        if value is None or pd.isna(value):
+            return "-"
+        return f"{float(value) * 100:.3f}%"
+
+    @staticmethod
+    def _fmt_number_value(value, decimals: int = 2) -> str:
+        if value is None or pd.isna(value):
+            return "-"
+        return f"{float(value):.{decimals}f}"
+
+    @staticmethod
+    def _safe_corr(x, y, method: str = "pearson", min_count: int = 3) -> float:
+        data = pd.DataFrame({
+            "x": pd.to_numeric(x, errors="coerce"),
+            "y": pd.to_numeric(y, errors="coerce"),
+        }).dropna()
+        if len(data) < min_count:
+            return np.nan
+        if data["x"].nunique() <= 1 or data["y"].nunique() <= 1:
+            return np.nan
+        return float(data["x"].corr(data["y"], method=method))
+
+    @staticmethod
+    def _fmt_ic_value(value) -> str:
+        if value is None or pd.isna(value):
+            return "-"
+        return f"{float(value):.3f}"
+
+    def _build_signal_ic_df(self, entry_df: pd.DataFrame, horizons: list[int]) -> pd.DataFrame:
+        rows = []
+        if entry_df is None or entry_df.empty or "signal_score" not in entry_df.columns:
+            return pd.DataFrame(columns=["horizon", "ic", "rank_ic", "count"])
+
+        for horizon in horizons:
+            raw_col = f"fwd_{horizon}_bar_raw_return"
+            if raw_col not in entry_df.columns:
+                rows.append({"horizon": f"T+{horizon}", "ic": np.nan, "rank_ic": np.nan, "count": 0})
+                continue
+
+            sample = entry_df[["signal_score", raw_col]].dropna()
+            rows.append({
+                "horizon": f"T+{horizon}",
+                "ic": self._safe_corr(sample["signal_score"], sample[raw_col], method="pearson"),
+                "rank_ic": self._safe_corr(sample["signal_score"], sample[raw_col], method="spearman"),
+                "count": int(len(sample)),
+            })
+
+        return pd.DataFrame(rows)
+
+    def _build_group_ic_df(self, entry_df: pd.DataFrame, group_col: str, raw_col: str) -> pd.DataFrame:
+        rows = []
+        if entry_df is None or entry_df.empty or group_col not in entry_df.columns or raw_col not in entry_df.columns:
+            return pd.DataFrame(columns=[group_col, "ic", "rank_ic", "count"])
+
+        for group_value, group in entry_df.groupby(group_col):
+            sample = group[["signal_score", raw_col]].dropna()
+            rows.append({
+                group_col: group_value,
+                "ic": self._safe_corr(sample["signal_score"], sample[raw_col], method="pearson"),
+                "rank_ic": self._safe_corr(sample["signal_score"], sample[raw_col], method="spearman"),
+                "count": int(len(sample)),
+            })
+        return pd.DataFrame(rows)
+
+    def _build_score_quantile_df(self, entry_df: pd.DataFrame, raw_col: str, buckets: int = 5) -> pd.DataFrame:
+        if entry_df is None or entry_df.empty or "signal_score" not in entry_df.columns or raw_col not in entry_df.columns:
+            return pd.DataFrame()
+
+        sample = entry_df[["signal_score", raw_col]].dropna().copy()
+        if len(sample) < buckets or sample["signal_score"].nunique() < 3:
+            return pd.DataFrame()
+
+        try:
+            sample["score_bucket"] = pd.qcut(sample["signal_score"], q=buckets, duplicates="drop")
+        except ValueError:
+            return pd.DataFrame()
+
+        if sample["score_bucket"].nunique() < 2:
+            return pd.DataFrame()
+
+        result = sample.groupby("score_bucket", observed=True).agg(
+            sample_count=("signal_score", "size"),
+            avg_signal_score=("signal_score", "mean"),
+            avg_raw_return=(raw_col, "mean"),
+            win_rate=(raw_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+        ).reset_index()
+        result["\u5206\u7ec4"] = [f"Q{i + 1}" for i in range(len(result))]
+        return result[["\u5206\u7ec4", "sample_count", "avg_signal_score", "avg_raw_return", "win_rate"]].rename(columns={"sample_count": "\u6837\u672c\u6570", "avg_signal_score": "\u5e73\u5747\u4fe1\u53f7\u5206\u6570", "avg_raw_return": "\u5e73\u5747\u539f\u59cb\u6536\u76ca", "win_rate": "\u80dc\u7387"})
+
+    @staticmethod
+    def _compact_table_html(df: pd.DataFrame) -> str:
+        if df is None or df.empty:
+            return "<div class='text-center text-gray-500 py-10'>暂无数据</div>"
+        return df.to_html(
+            index=False, border=0,
+            classes="w-full text-xs text-center text-gray-700 bg-white"
+        ).replace("<thead>", '<thead class="bg-gray-100 text-gray-700 sticky top-0">') \
+         .replace("<th>", '<th class="py-2 px-3 text-center whitespace-nowrap">') \
+         .replace("<td>", '<td class="py-2 px-3 text-center border-b border-gray-50">') \
+         .replace('style="text-align: right;"', '')
+
+    def _signal_rebalance_summary(self) -> dict:
+        if not self.rebalance_records:
+            return {"submitted": 0, "no_order": 0, "hold": 0}
+        df = pd.DataFrame(self.rebalance_records)
+        if df.empty or "action" not in df.columns:
+            return {"submitted": 0, "no_order": 0, "hold": 0}
+        counts = df["action"].value_counts()
+        return {
+            "submitted": int(counts.get("order_submitted", 0)),
+            "no_order": int(counts.get("no_order", 0)),
+            "hold": int(counts.get("hold", 0)),
+        }
+
+    def get_signal_diagnostics_html_div(self):
+        df = self._build_signal_diagnostics_df()
+        if df.empty:
+            return """
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-8 text-center text-gray-500">
+                \u672c\u6b21\u56de\u6d4b\u6ca1\u6709\u8bb0\u5f55\u5230\u53ef\u89c2\u6d4b\u4fe1\u53f7\u3002\u8bf7\u786e\u8ba4\u7b56\u7565\u7ee7\u627f GeneralSignalStrategy\uff0c\u5e76\u542f\u7528 record_signals=True\u3002            </div>
+            """
+
+        csv_name = "signal_events_full.csv"
+        df.to_csv(os.path.join(self.output_dir, csv_name), index=False, encoding="utf-8-sig")
+
+        entry_df = df[df["signal"].isin([1, -1])].copy()
+        exit_count = int((df["signal"] == 0).sum())
+        long_count = int((df["signal"] == 1).sum())
+        short_count = int((df["signal"] == -1).sum())
+        rebalance_summary = self._signal_rebalance_summary()
+        horizons = self._signal_horizons()
+        primary_horizon = 6 if 6 in horizons else horizons[min(2, len(horizons) - 1)]
+        primary_col = f"fwd_{primary_horizon}_bar_return"
+        primary_raw_col = f"fwd_{primary_horizon}_bar_raw_return"
+        ic_df = self._build_signal_ic_df(entry_df, horizons)
+        primary_ic_row = ic_df.loc[ic_df["horizon"] == f"T+{primary_horizon}"] if not ic_df.empty else pd.DataFrame()
+        primary_ic = float(primary_ic_row["ic"].iloc[0]) if not primary_ic_row.empty else np.nan
+        primary_rank_ic = float(primary_ic_row["rank_ic"].iloc[0]) if not primary_ic_row.empty else np.nan
+        entry_df_for_ic = entry_df.copy()
+        if not entry_df_for_ic.empty:
+            entry_df_for_ic["月份"] = pd.to_datetime(entry_df_for_ic["datetime"]).dt.to_period("M").astype(str)
+        monthly_ic_df = self._build_group_ic_df(entry_df_for_ic, "月份", primary_raw_col)
+        valid_monthly_ic = monthly_ic_df["ic"].dropna() if "ic" in monthly_ic_df.columns else pd.Series(dtype=float)
+        monthly_icir = (
+            float(valid_monthly_ic.mean() / valid_monthly_ic.std(ddof=1))
+            if valid_monthly_ic.size >= 2 and valid_monthly_ic.std(ddof=1) > 1e-12
+            else np.nan
+        )
+        score_quantile_df = self._build_score_quantile_df(entry_df, primary_raw_col)
+
+        if not entry_df.empty and primary_col in entry_df.columns:
+            valid_primary = entry_df[primary_col].dropna()
+            win_rate = float((valid_primary > 0).mean()) if not valid_primary.empty else np.nan
+            avg_forward = float(valid_primary.mean()) if not valid_primary.empty else np.nan
+        else:
+            win_rate = np.nan
+            avg_forward = np.nan
+
+        avg_rows = []
+        for horizon in horizons:
+            col = f"fwd_{horizon}_bar_return"
+            sample = entry_df[col].dropna() if col in entry_df.columns else pd.Series(dtype=float)
+            avg_rows.append({
+                "horizon": f"T+{horizon}",
+                "avg_return": float(sample.mean() * 100) if not sample.empty else np.nan,
+                "win_rate": float((sample > 0).mean() * 100) if not sample.empty else np.nan,
+                "count": int(sample.count()),
+            })
+        avg_df = pd.DataFrame(avg_rows)
+
+        positive_horizons = int((avg_df["avg_return"] > 0).sum()) if not avg_df.empty else 0
+        balance_ratio = min(long_count, short_count) / max(long_count, short_count) if max(long_count, short_count) > 0 else np.nan
+        avg_mfe = float(entry_df["fwd_mfe_24_bar"].mean()) if "fwd_mfe_24_bar" in entry_df and not entry_df.empty else np.nan
+        avg_mae = float(entry_df["fwd_mae_24_bar"].mean()) if "fwd_mae_24_bar" in entry_df and not entry_df.empty else np.nan
+        mfe_mae_ratio = avg_mfe / abs(avg_mae) if pd.notna(avg_mfe) and pd.notna(avg_mae) and abs(avg_mae) > 1e-12 else np.nan
+        sample_note = "\u6837\u672c\u504f\u5c11" if len(entry_df) < 30 else ("\u6837\u672c\u4e2d\u7b49" if len(entry_df) < 100 else "\u6837\u672c\u8f83\u591a")
+
+        cards = [
+            ("\u4fe1\u53f7\u603b\u6570", f"{len(df):,}", "Recorded signal events"),
+            ("\u5f00\u4ed3\u4fe1\u53f7", f"{len(entry_df):,}", f"Long {long_count:,} / Short {short_count:,}"),
+            ("\u5e73\u4ed3\u4fe1\u53f7", f"{exit_count:,}", "Exit / Flat signals"),
+            ("\u63d0\u4ea4\u8ba2\u5355", f"{rebalance_summary['submitted']:,}", "Orders submitted by rebalancer"),
+            (f"T+{primary_horizon} Bar \u80dc\u7387", self._fmt_pct_value(win_rate), "Entry-signal directional hit rate"),
+            (f"T+{primary_horizon} Bar \u5747\u503c", self._fmt_pct_value(avg_forward), "Entry-signal average return"),
+            (f"T+{primary_horizon} IC", self._fmt_ic_value(primary_ic), "Signal score vs raw forward return"),
+            (f"T+{primary_horizon} Rank IC", self._fmt_ic_value(primary_rank_ic), "Rank correlation"),
+            ("\u6708\u5ea6 ICIR", self._fmt_number_value(monthly_icir, 2), "Mean monthly IC / std"),
+            ("\u6837\u672c\u72b6\u6001", sample_note, "Entry signal sample size"),
+            ("\u5468\u671f\u7a33\u5b9a\u6027", f"{positive_horizons}/{len(horizons)}", "Positive average horizons"),
+            ("\u591a\u7a7a\u5747\u8861\u5ea6", self._fmt_pct_value(balance_ratio), "Min(long, short) / max(long, short)"),
+            ("MFE/MAE ?", self._fmt_number_value(mfe_mae_ratio, 2), "Average favorable / adverse excursion"),
+        ]
+        cards_html = "".join(
+            f"""
+            <div class="border border-gray-100 rounded-lg p-4 bg-gray-50">
+                <div class="text-xs text-gray-500">{subtitle}</div>
+                <div class="text-sm font-semibold text-gray-700 mt-1">{title}</div>
+                <div class="text-2xl font-bold text-gray-900 mt-2">{value}</div>
+            </div>
+            """
+            for title, value, subtitle in cards
+        )
+
+        avg_rows = []
+        for horizon in horizons:
+            col = f"fwd_{horizon}_bar_return"
+            sample = entry_df[col].dropna() if col in entry_df.columns else pd.Series(dtype=float)
+            avg_rows.append({
+                "horizon": f"T+{horizon}",
+                "avg_return": float(sample.mean() * 100) if not sample.empty else np.nan,
+                "win_rate": float((sample > 0).mean() * 100) if not sample.empty else np.nan,
+                "count": int(sample.count()),
+            })
+        avg_df = pd.DataFrame(avg_rows)
+
+        fig_avg = go.Figure()
+        fig_avg.add_trace(go.Bar(
+            x=avg_df["horizon"],
+            y=avg_df["avg_return"],
+            name="Average Forward Return",
+            marker_color=np.where(avg_df["avg_return"] >= 0, "#dc2626", "#16a34a"),
+            text=[f"{v:.3f}%" if pd.notna(v) else "-" for v in avg_df["avg_return"]],
+            textposition="outside",
+            hovertemplate="\u89c2\u5bdf\u7a97\u53e3: %{x} Bar<br>\u5f00\u4ed3\u65b9\u5411\u6536\u76ca\u5747\u503c: %{y:.3f}%<extra></extra>",
+        ))
+        fig_avg.update_layout(
+            height=330,
+            margin=dict(l=60, r=24, t=20, b=50),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            yaxis=dict(title="\u5f00\u4ed3\u65b9\u5411\u6536\u76ca\u5747\u503c(%)", zeroline=True, zerolinecolor="#9ca3af", gridcolor="#f3f4f6"),
+            xaxis=dict(title="\u4fe1\u53f7\u540e\u89c2\u5bdf\u7a97\u53e3\uff0cT+N \u8868\u793a\u4fe1\u53f7\u540e\u7b2c N \u6839Bar"),
+            showlegend=False,
+        )
+        html_avg_chart = fig_avg.to_html(full_html=False, include_plotlyjs=False)
+
+        if not ic_df.empty:
+            fig_ic = go.Figure()
+            fig_ic.add_trace(go.Bar(
+                x=ic_df["horizon"],
+                y=ic_df["ic"],
+                name="IC",
+                marker_color="#2563eb",
+                hovertemplate="观察窗口: %{x}<br>IC: %{y:.3f}<extra></extra>",
+            ))
+            fig_ic.add_trace(go.Bar(
+                x=ic_df["horizon"],
+                y=ic_df["rank_ic"],
+                name="Rank IC",
+                marker_color="#7c3aed",
+                hovertemplate="观察窗口: %{x}<br>Rank IC: %{y:.3f}<extra></extra>",
+            ))
+            fig_ic.update_layout(
+                height=330,
+                barmode="group",
+                margin=dict(l=60, r=24, t=24, b=50),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                yaxis=dict(title="相关系数", zeroline=True, zerolinecolor="#9ca3af", gridcolor="#f3f4f6"),
+                xaxis=dict(title="\u4fe1\u53f7\u540e\u89c2\u5bdf\u7a97\u53e3"),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            )
+            html_ic_chart = fig_ic.to_html(full_html=False, include_plotlyjs=False)
+
+            ic_display = ic_df.copy()
+            ic_display = ic_display.rename(columns={
+                "horizon": "观察窗口",
+                "ic": "IC",
+                "rank_ic": "Rank IC",
+                "count": "\u6837\u672c\u6570",
+            })
+            ic_display["IC"] = ic_display["IC"].map(self._fmt_ic_value)
+            ic_display["Rank IC"] = ic_display["Rank IC"].map(self._fmt_ic_value)
+            html_ic_table = self._compact_table_html(ic_display)
+        else:
+            html_ic_chart = "<div class=\'text-center text-gray-500 py-20\'>\u6682\u65e0\u8db3\u591f IC \u6837\u672c</div>"
+            html_ic_table = "<div class=\'text-center text-gray-500 py-10\'>\u6682\u65e0\u8db3\u591f IC \u6837\u672c</div>"
+
+        if not score_quantile_df.empty:
+            quantile_display = score_quantile_df.copy()
+            quantile_display["平均信号分数"] = quantile_display["平均信号分数"].map(lambda value: self._fmt_number_value(value, 4))
+            quantile_display["\u5e73\u5747\u539f\u59cb\u6536\u76ca"] = quantile_display["\u5e73\u5747\u539f\u59cb\u6536\u76ca"].map(self._fmt_pct_value)
+            quantile_display["胜率"] = quantile_display["胜率"].map(self._fmt_pct_value)
+            html_quantile_table = self._compact_table_html(quantile_display)
+        else:
+            html_quantile_table = "<div class=\'text-center text-gray-500 py-10\'>\u4fe1\u53f7\u5206\u6570\u5c42\u7ea7\u4e0d\u8db3\uff0c\u6682\u4e0d\u751f\u6210\u5206\u5c42\u6536\u76ca</div>"
+
+        valid_dist = entry_df[primary_col].dropna() * 100 if primary_col in entry_df.columns else pd.Series(dtype=float)
+        if not valid_dist.empty:
+            fig_dist = go.Figure()
+            fig_dist.add_trace(go.Histogram(
+                x=valid_dist,
+                nbinsx=40,
+                marker_color="#64748b",
+                opacity=0.85,
+                hovertemplate="Return bucket: %{x:.3f}%<br>Count: %{y}<extra></extra>",
+            ))
+            fig_dist.update_layout(
+                height=330,
+                margin=dict(l=60, r=24, t=20, b=50),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                xaxis=dict(title=f"T+{primary_horizon} Bar \u5f00\u4ed3\u65b9\u5411\u6536\u76ca(%)", zeroline=True, zerolinecolor="#9ca3af"),
+                yaxis=dict(title="信号次数", gridcolor="#f3f4f6"),
+                showlegend=False,
+            )
+            html_dist_chart = fig_dist.to_html(full_html=False, include_plotlyjs=False)
+        else:
+            html_dist_chart = "<div class=\'text-center text-gray-500 py-20\'>\u6682\u65e0\u8db3\u591f\u65b9\u5411\u6536\u76ca\u6837\u672c</div>"
+
+        if not entry_df.empty:
+            direction_perf = entry_df.copy()
+            direction_perf["\u65b9\u5411"] = direction_perf["signal"].map({1: "\u591a\u5934\u4fe1\u53f7 (Long)", -1: "\u7a7a\u5934\u4fe1\u53f7 (Short)"})
+            direction_perf = direction_perf.groupby("\u65b9\u5411").agg(
+                signal_count=("signal", "size"),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+                avg_mfe=("fwd_mfe_24_bar", "mean"),
+                avg_mae=("fwd_mae_24_bar", "mean"),
+            ).reset_index().rename(columns={
+                "signal_count": "\u4fe1\u53f7\u6570",
+                "avg_return": "\u5e73\u5747\u6536\u76ca",
+                "win_rate": "\u80dc\u7387",
+                "avg_mfe": "\u5e73\u5747MFE",
+                "avg_mae": "\u5e73\u5747MAE",
+            })
+            for col in ["\u5e73\u5747\u6536\u76ca", "\u80dc\u7387", "\u5e73\u5747MFE", "\u5e73\u5747MAE"]:
+                direction_perf[col] = direction_perf[col].map(self._fmt_pct_value)
+            html_direction_table = self._compact_table_html(direction_perf)
+
+            reason_perf = entry_df.copy()
+            reason_perf["reason"] = reason_perf["reason"].fillna("").replace("", "unspecified")
+            reason_perf["\u4fe1\u53f7\u65b9\u5411"] = reason_perf["signal"].map({1: "\u5f00\u591a/\u52a0\u591a", -1: "\u5f00\u7a7a/\u52a0\u7a7a"})
+            reason_perf = reason_perf.groupby(["reason", "\u4fe1\u53f7\u65b9\u5411"]).agg(
+                signal_count=("signal", "size"),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+                avg_mfe=("fwd_mfe_24_bar", "mean"),
+                avg_mae=("fwd_mae_24_bar", "mean"),
+            ).reset_index().rename(columns={
+                "reason": "\u539f\u56e0",
+                "signal_count": "\u4fe1\u53f7\u6570",
+                "avg_return": "\u5e73\u5747\u6536\u76ca",
+                "win_rate": "\u80dc\u7387",
+                "avg_mfe": "\u5e73\u5747MFE",
+                "avg_mae": "\u5e73\u5747MAE",
+            })
+            for col in ["\u5e73\u5747\u6536\u76ca", "\u80dc\u7387", "\u5e73\u5747MFE", "\u5e73\u5747MAE"]:
+                reason_perf[col] = reason_perf[col].map(self._fmt_pct_value)
+            reason_perf = reason_perf.sort_values("\u4fe1\u53f7\u6570", ascending=False)
+            html_reason_perf_table = self._compact_table_html(reason_perf)
+
+            month_perf = entry_df.copy()
+            month_perf["\u6708\u4efd"] = pd.to_datetime(month_perf["datetime"]).dt.to_period("M").astype(str)
+            month_perf = month_perf.groupby("\u6708\u4efd").agg(
+                signal_count=("signal", "size"),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+            ).reset_index().rename(columns={
+                "signal_count": "\u4fe1\u53f7\u6570",
+                "avg_return": "\u5e73\u5747\u6536\u76ca",
+                "win_rate": "\u80dc\u7387",
+            })
+            if not monthly_ic_df.empty:
+                month_perf = month_perf.merge(monthly_ic_df.rename(columns={
+                    "ic": "IC",
+                    "rank_ic": "Rank IC",
+                    "count": "IC\u6837\u672c\u6570",
+                }), on="\u6708\u4efd", how="left")
+            for col in ["\u5e73\u5747\u6536\u76ca", "\u80dc\u7387"]:
+                month_perf[col] = month_perf[col].map(self._fmt_pct_value)
+            for col in ["IC", "Rank IC"]:
+                if col in month_perf.columns:
+                    month_perf[col] = month_perf[col].map(self._fmt_ic_value)
+            html_month_table = self._compact_table_html(month_perf.tail(24))
+        else:
+            html_direction_table = "<div class=\'text-center text-gray-500 py-10\'>\u6682\u65e0\u5f00\u4ed3\u65b9\u5411\u4fe1\u53f7</div>"
+            html_reason_perf_table = "<div class=\'text-center text-gray-500 py-10\'>\u6682\u65e0\u5f00\u4ed3\u65b9\u5411\u4fe1\u53f7</div>"
+            html_month_table = "<div class=\'text-center text-gray-500 py-10\'>\u6682\u65e0\u5f00\u4ed3\u65b9\u5411\u4fe1\u53f7</div>"
+
+        if not entry_df.empty:
+            symbol_stats = entry_df.groupby("symbol").agg(
+                signal_count=("symbol", "size"),
+                long_count=("signal", lambda s: int((s == 1).sum())),
+                short_count=("signal", lambda s: int((s == -1).sum())),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+                avg_mfe=("fwd_mfe_24_bar", "mean"),
+                avg_mae=("fwd_mae_24_bar", "mean"),
+            ).reset_index().rename(columns={
+                "symbol": "Symbol",
+                "signal_count": "Signal Count",
+                "long_count": "Long Count",
+                "short_count": "Short Count",
+                "avg_return": "Average Return",
+                "win_rate": "Hit Rate",
+                "avg_mfe": "Average MFE",
+                "avg_mae": "Average MAE",
+            })
+            symbol_stats["Average Return"] = symbol_stats["Average Return"].map(self._fmt_pct_value)
+            symbol_stats["Hit Rate"] = symbol_stats["Hit Rate"].map(self._fmt_pct_value)
+            symbol_stats["Average MFE"] = symbol_stats["Average MFE"].map(self._fmt_pct_value)
+            symbol_stats["Average MAE"] = symbol_stats["Average MAE"].map(self._fmt_pct_value)
+            symbol_stats = symbol_stats.sort_values("Signal Count", ascending=False)
+            html_symbol_table = symbol_stats.to_html(
+                index=False, border=0,
+                classes="w-full text-xs text-center text-gray-700 bg-white"
+            ).replace("<thead>", '<thead class="bg-gray-100 text-gray-700 sticky top-0">') \
+             .replace("<th>", '<th class="py-2 px-3 text-center whitespace-nowrap">') \
+             .replace("<td>", '<td class="py-2 px-3 text-center border-b border-gray-50">') \
+             .replace('style="text-align: right;"', '')
+        else:
+            html_symbol_table = "<div class='text-center text-gray-500 py-10'>No entry signals</div>"
+
+        reason_df = (
+            df.fillna({"reason": ""})
+            .assign(reason=lambda item: item["reason"].replace("", "unspecified"))
+            .groupby(["reason", "signal"])
+            .size()
+            .reset_index(name="次数")
+            .sort_values("次数", ascending=False)
+            .head(50)
+        )
+        reason_df.columns = ["原因", "信号", "次数"]
+        html_reason_table = reason_df.to_html(
+            index=False, border=0,
+            classes="w-full text-xs text-center text-gray-700 bg-white"
+        ).replace("<thead>", '<thead class="bg-gray-100 text-gray-700 sticky top-0">') \
+         .replace("<th>", '<th class="py-2 px-3 text-center whitespace-nowrap">') \
+         .replace("<td>", '<td class="py-2 px-3 text-center border-b border-gray-50">') \
+         .replace('style="text-align: right;"', '')
+
+        preview_cols = [
+            "datetime", "symbol", "signal", "reason", "current_net", "price",
+            "signal_score", "size_scale", f"fwd_{horizons[0]}_bar_return",
+            primary_col, primary_raw_col, "fwd_mfe_24_bar", "fwd_mae_24_bar",
+        ]
+        preview_cols = [col for col in preview_cols if col in df.columns]
+        preview = df[preview_cols].head(500).copy()
+        for col in [item for item in preview.columns if item.startswith("fwd_")]:
+            preview[col] = preview[col].map(self._fmt_pct_value)
+        if "datetime" in preview.columns:
+            preview["datetime"] = pd.to_datetime(preview["datetime"]).dt.strftime("%Y-%m-%d %H:%M:%S")
+        preview = preview.rename(columns={
+            "datetime": "时间",
+            "symbol": "\u54c1\u79cd",
+            "signal": "信号",
+            "reason": "原因",
+            "current_net": "\u5f53\u65f6\u51c0\u6301\u4ed3",
+            "price": "\u4fe1\u53f7\u4ef7",
+            "signal_score": "信号分数",
+            "size_scale": "仓位系数",
+            f"fwd_{horizons[0]}_bar_return": f"T+{horizons[0]} Bar收益",
+            primary_col: f"T+{primary_horizon} Bar收益",
+            primary_raw_col: f"T+{primary_horizon} Bar\u539f\u59cb\u6536\u76ca",
+            "fwd_mfe_24_bar": "24 Bar MFE",
+            "fwd_mae_24_bar": "24 Bar MAE",
+        })
+        html_preview_table = preview.to_html(
+            index=False, border=0,
+            classes="w-full text-xs text-center text-gray-700 bg-white"
+        ).replace("<thead>", '<thead class="bg-gray-100 text-gray-700 sticky top-0">') \
+         .replace("<th>", '<th class="py-2 px-3 text-center whitespace-nowrap">') \
+         .replace("<td>", '<td class="py-2 px-3 text-center border-b border-gray-50">') \
+         .replace('style="text-align: right;"', '')
+
+        return f"""
+        <div class="space-y-6">
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">\u4fe1\u53f7\u68c0\u6d4b\u6982\u89c8 (Signal Inspection Overview)</h2>
+                    <a href="{csv_name}" download class="bg-[#1e3a8a] hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium">下载信号明细 CSV</a>
+                </div>
+                <div class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">{cards_html}</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3 mb-3">信号编码说明 (Signal Encoding)</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm text-gray-700">
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = 1</b><br>\u5f00\u591a\u6216\u52a0\u591a\u5934\u3002\u662f\u5426\u771f\u7684\u6210\u4ea4\uff0c\u8fd8\u8981\u770b\u8c03\u4ed3\u5668\u3001\u4fdd\u8bc1\u91d1\u3001\u6302\u5355\u548c\u64ae\u5408\u3002</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = -1</b><br>\u5f00\u7a7a\u6216\u52a0\u7a7a\u5934\u3002\u4f8b\uff1ashort_entry_high_zscore \u8868\u793a\u7b56\u7565\u7ed9\u51fa\u7684\u9ad8 zscore \u505a\u7a7a\u539f\u56e0\u3002</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = 0</b><br>\u5e73\u4ed3\u6216\u51cf\u4ed3\u4fe1\u53f7\u3002\u534a\u5e73\u548c\u5168\u5e73\u90fd\u4f1a\u8868\u73b0\u4e3a 0\uff0c\u6240\u4ee5\u6570\u91cf\u5e38\u4f1a\u591a\u4e8e\u5f00\u4ed3\u4fe1\u53f7\u3002</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = None</b><br>\u89c2\u671b\u6216\u65e0\u52a8\u4f5c\u4fe1\u53f7\u3002\u9ed8\u8ba4\u4e0d\u5c55\u793a\uff0c\u907f\u514d\u5927\u91cf hold / warming_up \u6df9\u6ca1\u6709\u6548\u4fe1\u53f7\u3002</div>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <h2 class="text-lg font-bold text-gray-800 border-l-4 border-indigo-600 pl-3 mb-2">IC \u68c0\u6d4b (Information Coefficient)</h2>
+                <p class="text-xs text-gray-500 mb-3 pl-3">IC \u4f7f\u7528\u4fe1\u53f7\u5206\u6570\u4e0e\u672a\u6765\u539f\u59cb\u6536\u76ca\u8ba1\u7b97 Pearson \u76f8\u5173\uff1bRank IC \u4f7f\u7528 Spearman \u79e9\u76f8\u5173\u3002\u5b83\u8861\u91cf\u4fe1\u53f7\u5f3a\u5f31\u6392\u5e8f\u662f\u5426\u5bf9\u5e94\u672a\u6765\u6da8\u8dcc\uff0c\u4e0d\u7b49\u540c\u4e8e\u6700\u7ec8\u4ea4\u6613\u6536\u76ca\u3002</p>
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                    <div class="xl:col-span-2">{html_ic_chart}</div>
+                    <div class="overflow-y-auto max-h-[330px]">{html_ic_table}</div>
+                </div>
+                <div class="mt-4">
+                    <h3 class="text-sm font-semibold text-gray-700 mb-2 pl-3">信号分数分层收益 (Score Quantile Return)</h3>
+                    <div class="overflow-y-auto max-h-[280px]">{html_quantile_table}</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3 mb-2">\u5f00\u4ed3\u4fe1\u53f7\u540e\u65b9\u5411\u6536\u76ca (Entry Signal Forward Return)</h2>
+                    <p class="text-xs text-gray-500 mb-2 pl-3">T+N \u8868\u793a\u4fe1\u53f7\u540e\u7b2c N \u6839Bar\uff0c\u4e0d\u4ee3\u8868\u6b63\u6536\u76ca\uff1b\u7ea2\u8272\u4e3a\u65b9\u5411\u6536\u76ca\u4e3a\u6b63\uff0c\u7eff\u8272\u4e3a\u65b9\u5411\u6536\u76ca\u4e3a\u8d1f\u3002\u8fd9\u91cc\u6309\u4fe1\u53f7\u5f53\u6839\u4ef7\u683c\u6d4b\u7b97\uff0c\u4e0d\u7b49\u540c\u4e8e\u4e0b\u4e00\u6839Bar\u7684\u771f\u5b9e\u6210\u4ea4\u6536\u76ca\u3002</p>
+                    {html_avg_chart}
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-slate-600 pl-3 mb-2">\u5f00\u4ed3\u4fe1\u53f7\u540e\u6536\u76ca\u5206\u5e03 (Entry Signal Return Distribution)</h2>
+                    <p class="text-xs text-gray-500 mb-2 pl-3">\u4ec5\u7edf\u8ba1 signal=1/-1 \u7684\u5f00\u4ed3\u65b9\u5411\u4fe1\u53f7\uff0csignal=0 \u7684\u5e73\u4ed3\u4fe1\u53f7\u4e0d\u53c2\u4e0e\u672a\u6765\u6536\u76ca\u5206\u5e03\u3002</p>
+                    {html_dist_chart}
+                </div>
+            </div>
+            <div class="grid grid-cols-1 xl:grid-cols-3 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">多空方向表现 (By Direction)</h2>
+                    </div>
+                    <div class="overflow-y-auto max-h-[360px]">{html_direction_table}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">\u5f00\u4ed3\u539f\u56e0\u8868\u73b0 (Entry Reason Performance)</h2>
+                    </div>
+                    <div class="overflow-y-auto max-h-[360px]">{html_reason_perf_table}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">\u6708\u4efd\u7a33\u5b9a\u6027 (Monthly Stability)</h2>
+                    </div>
+                    <div class="overflow-y-auto max-h-[360px]">{html_month_table}</div>
+                </div>
+            </div>
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">\u6309\u54c1\u79cd\u7edf\u8ba1 (By Symbol)</h2>
+                    </div>
+                    <div class="overflow-y-auto max-h-[420px]">{html_symbol_table}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100">
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">\u4fe1\u53f7\u539f\u56e0\u7edf\u8ba1 (By Reason)</h2>
+                    </div>
+                    <div class="overflow-y-auto max-h-[420px]">{html_reason_table}</div>
+                </div>
+            </div>
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 bg-cyan-50">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">信号事件明细 (Signal Events)</h2>
+                    <p class="text-xs text-gray-500 mt-2 pl-3">\u9875\u9762\u4ec5\u5c55\u793a\u524d 500 \u6761\uff0c\u5b8c\u6574\u6570\u636e\u8bf7\u4e0b\u8f7d CSV\u3002\u6536\u76ca\u4e3a\u4fe1\u53f7\u65b9\u5411\u6536\u76ca\uff1a\u591a\u5934\u770b\u4e0a\u6da8\uff0c\u7a7a\u5934\u770b\u4e0b\u8dcc\uff1b\u5e73\u4ed3\u4fe1\u53f7\u4e0d\u8ba1\u7b97\u672a\u6765\u65b9\u5411\u6536\u76ca\u3002</p>
+                </div>
+                <div class="overflow-y-auto max-h-[520px]">{html_preview_table}</div>
+            </div>
+        </div>
+        """
+
 
     def get_metrics_table_html(self):
-        """利用 Pandas 直接生成高度紧凑、自适应全屏的专业多列矩阵"""
+        """Build the compact performance metrics table."""
         if not hasattr(self, 'metrics_list') or not self.metrics_list:
-            return "<div class='text-center text-gray-500 py-10'>无绩效计算结果</div>"
+            return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u7ee9\u6548\u6307\u6807</div>"
 
         df = pd.DataFrame(self.metrics_list)
-        # 绩效表列数较多，使用紧凑字号和单元格间距保证首屏可读性。
+        # 绩效表列数较多，使用紧凑字号和单元格间距保证首屏�??性�??
         html = df.to_html(index=False, border=0,
                           classes="w-full text-[11px] text-center text-gray-700 bg-white antialiased tracking-tighter")
 
@@ -1806,13 +2605,13 @@ class StrategyAnalyzer:
         return html
 
     def get_params_table_html(self):
-        """生成基础参数表 HTML"""
+        """Build the backtest parameter table."""
         if not self.describe_params:
             return ""
         df = pd.DataFrame([self.describe_params])
         html = df.to_html(index=False, border=0,
                           classes="w-full text-sm text-center text-gray-600 bg-white shadow-sm rounded-lg overflow-hidden")
-        # 移除 pandas 默认右对齐样式，保持参数表统一居中。
+        # 移除 pandas 默�?右�?齐样式，保持参数表统�?居中�?
         html = html.replace('<thead>', '<thead class="bg-gray-100 text-gray-700 font-semibold border-b">') \
             .replace('<th>', '<th class="py-3 px-4 text-center">') \
             .replace('<td>', '<td class="py-3 px-4 text-center border-b border-gray-50">') \
@@ -1830,7 +2629,7 @@ class StrategyAnalyzer:
         self._calculate_metrics()
 
         if not self.metrics:
-            _safe_print("[Analyzer Warning] 回测期间无完整开平仓记录，无法生成分析报告。")
+            _safe_print("[Analyzer Warning] \u56de\u6d4b\u671f\u95f4\u65e0\u5b8c\u6574\u5f00\u5e73\u4ed3\u8bb0\u5f55\uff0c\u65e0\u6cd5\u751f\u6210\u5206\u6790\u62a5\u544a\u3002")
             return
 
         report_path = os.path.join(self.output_dir, '0_performance_report.txt')
@@ -1844,4 +2643,4 @@ class StrategyAnalyzer:
                 f.write(line)
 
         _safe_print("=" * 50)
-        _safe_print("[Analyzer] 指标计算完成，正在准备前端报告数据。")
+        _safe_print("[Analyzer] \u6307\u6807\u8ba1\u7b97\u5b8c\u6210\uff0c\u6b63\u5728\u51c6\u5907\u524d\u7aef\u62a5\u544a\u6570\u636e\u3002")

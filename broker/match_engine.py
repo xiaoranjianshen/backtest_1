@@ -12,7 +12,7 @@ import pandas as pd
 from .order import Order, Trade, OrderStatus, Direction, Offset, OrderType
 from .fee_model import FeeModel
 from portfolio.account import Account
-from config import pure_product_code
+from config import pure_product_code, trade_symbol_code
 
 
 class MatchEngine:
@@ -41,7 +41,7 @@ class MatchEngine:
         if order.offset != Offset.OPEN:
             return 0.0
 
-        raw_code = pure_product_code(order.symbol)
+        raw_code = trade_symbol_code(order.symbol)
         target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
         pos_key = self.account._get_position_key(raw_code, target_pos_dir)
         pos = self.account.positions.get(pos_key)
@@ -56,7 +56,7 @@ class MatchEngine:
         for pending in self.pending_orders:
             if pending.offset not in (Offset.CLOSE, Offset.CLOSE_TODAY):
                 continue
-            if pure_product_code(pending.symbol) != raw_code:
+            if trade_symbol_code(pending.symbol) != raw_code:
                 continue
             if pending.direction != order.direction:
                 continue
@@ -77,12 +77,30 @@ class MatchEngine:
         return self.account.estimate_required_cash(order, reference_price)
 
     def _validate_order_at_fill(self, order: Order, exec_price: float) -> bool:
+        self._reroute_close_offset_at_fill(order)
         reserved_cash = self._reserved_cash_for_order(order)
         return self.account.check_order_validation(
             order,
             exec_price,
             pending_cash_adjustment=reserved_cash,
         )
+
+    def _reroute_close_offset_at_fill(self, order: Order):
+        if order.offset not in (Offset.CLOSE, Offset.CLOSE_TODAY):
+            return
+
+        raw_code = trade_symbol_code(order.symbol)
+        target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
+        pos_key = self.account._get_position_key(raw_code, target_pos_dir)
+        pos = self.account.positions.get(pos_key, {})
+        self.account._normalise_position(pos)
+
+        yd_vol = pos.get('yd_volume', 0)
+        td_vol = pos.get('td_volume', 0)
+        if order.offset == Offset.CLOSE_TODAY and td_vol < order.volume <= yd_vol:
+            order.offset = Offset.CLOSE
+        elif order.offset == Offset.CLOSE and yd_vol < order.volume <= td_vol:
+            order.offset = Offset.CLOSE_TODAY
 
     def _reject_pending_order(self, order: Order, reason: str):
         order.status = OrderStatus.REJECTED
@@ -96,7 +114,7 @@ class MatchEngine:
     def insert_order(self, order: Order, reference_price: float):
         """策略下达订单，引擎智能路由平今/平昨，再过风控"""
 
-        raw_code = pure_product_code(order.symbol)
+        raw_code = trade_symbol_code(order.symbol)
         target_pos_dir = Direction.LONG if order.direction == Direction.SHORT else Direction.SHORT
         pos_key = self.account._get_position_key(raw_code, target_pos_dir)
         pos_info = self.account.positions.get(pos_key, {})
@@ -217,7 +235,7 @@ class MatchEngine:
                 print(f"[Broker Cancel] {current_time} | order {order.order_id} expired")
                 continue
 
-            raw_code = pure_product_code(order.symbol)
+            raw_code = trade_symbol_code(order.symbol)
             if raw_code not in bar_data:
                 continue
 

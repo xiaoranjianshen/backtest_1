@@ -3,12 +3,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 import webbrowser
 import importlib
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
@@ -29,7 +31,7 @@ if loaded_config is not None:
     if loaded_path.name == "config.py" and loaded_path.parent == UI_DIR:
         del sys.modules["config"]
 
-from config import SYMBOL_DICT
+from config import NAME_TO_CODE, SYMBOL_DICT
 import data_manager as data_manager_module
 from labels import (
     DATA_TYPE_LABELS,
@@ -40,6 +42,8 @@ from labels import (
     format_with_mapping,
 )
 import run_from_config as run_config_module
+from agent_panel import render_agent_panel
+from pulse_panel import render_pulse_panel
 from ui_config import ACTIVE_REPORT_CONFIG_PATH, APP_ICON, APP_TITLE, CUSTOM_CSS, LAYOUT, PROJECT_ROOT
 
 
@@ -52,6 +56,8 @@ available_strategy_specs = run_config_module.available_strategy_specs
 SELECTED_SYMBOLS_KEY = "selected_symbols"
 ACTIVE_CONFIG_SOURCE_MTIME_KEY = "active_config_source_mtime"
 RUN_NOTICE_KEY = "run_notice"
+CONFIG_ASSISTANT_DRAFT_KEY = "config_assistant_draft"
+CONFIG_ASSISTANT_PROMPT_KEY = "config_assistant_prompt"
 RUN_LOCK_PATH = UI_DIR / ".runtime" / "backtest_run.lock"
 SECTOR_ORDER = [
     "黑色",
@@ -207,7 +213,329 @@ def _strategy_form_defaults(strategy_key: str, active_config: dict) -> dict:
         defaults.setdefault("min_volume", 1)
         defaults.setdefault("max_volume", None)
         defaults.setdefault("slippage_ticks", 0.5)
+    if strategy_key == "abs_ret_rolling_validation":
+        defaults["freq"] = "1d"
+        defaults["data_type"] = "all"
+        defaults["order_type"] = "market"
+        defaults["price_field"] = "close"
+        defaults.setdefault("sizing_mode", "fixed_volume")
+        defaults.setdefault("sizing_value", 1.0)
+        defaults.setdefault("min_volume", 0)
+        defaults.setdefault("max_volume", None)
+        defaults.setdefault("slippage_ticks", 0.5)
+        defaults.setdefault("close_pct", 1.0)
+        defaults.setdefault("allow_reverse", True)
+        defaults.setdefault("respect_pending_orders", True)
+        defaults.setdefault("prediction_mode", "online_model")
+        defaults.setdefault("model_available_date", "2025-07-01")
+        defaults.setdefault("validation_mode", "monthly_prior")
+        defaults.setdefault("absret_universe_mode", "all_predictions")
+        defaults.setdefault("min_signal_confidence", 0.60)
+        defaults.setdefault("daily_signal_cutoff_hour", 21)
     return defaults
+
+
+@dataclass(frozen=True)
+class ConfigAssistantResult:
+    config: dict
+    summary: list[str]
+    warnings: list[str]
+
+
+NAME_TO_SYMBOL_HINTS = {
+    "黄金": "au",
+    "沪金": "au",
+    "白银": "ag",
+    "沪银": "ag",
+    "螺纹": "rb",
+    "螺纹钢": "rb",
+    "热卷": "hc",
+    "铁矿": "i",
+    "焦煤": "jm",
+    "焦炭": "j",
+    "铜": "cu",
+    "铝": "al",
+    "锌": "zn",
+    "原油": "sc",
+    "橡胶": "ru",
+    "PTA": "ta",
+    "pta": "ta",
+    "甲醇": "ma",
+    "纯碱": "sa",
+    "玻璃": "fg",
+    "豆粕": "m",
+    "棕榈": "p",
+    "苹果": "ap",
+}
+
+CONFIG_ASSISTANT_IGNORED_TOKENS = {
+    "atr",
+    "csv",
+    "data",
+    "json",
+    "main",
+    "tick",
+    "vwap",
+    "zscore",
+}
+
+
+def build_backtest_config_draft(
+    prompt: str,
+    active_config: dict,
+    available_keys: set[str],
+    *,
+    today: date | None = None,
+) -> ConfigAssistantResult:
+    today = today or date.today()
+    text = str(prompt or "").strip()
+    lower_text = text.lower()
+    config = dict(active_config or {})
+    summary: list[str] = []
+    warnings: list[str] = []
+
+    strategy = _infer_strategy_key(lower_text, available_keys, config.get("strategy"))
+    config["strategy"] = strategy
+    summary.append(f"策略：{_strategy_label(strategy)}")
+
+    symbols = _infer_prompt_symbols(text)
+    if symbols:
+        config["symbols"] = symbols
+        summary.append(f"品种：{', '.join(_symbol_selection_label(symbol) for symbol in symbols)}")
+    elif not _coerce_symbols(config.get("symbols")):
+        config["symbols"] = ["au"]
+        warnings.append("没有识别到品种，暂时使用 au。")
+        summary.append(f"品种：{_symbol_selection_label('au')}")
+    else:
+        inherited_symbols = _coerce_symbols(config.get("symbols"))
+        summary.append(
+            "品种：沿用当前表单 "
+            + ", ".join(_symbol_selection_label(symbol) for symbol in inherited_symbols)
+        )
+        warnings.append("没有从描述中识别到新的品种，草案会沿用当前表单已选品种。")
+
+    freq = _infer_prompt_freq(lower_text) or str(config.get("freq") or "1d")
+    config["freq"] = freq
+    summary.append(f"周期：{freq}")
+
+    data_type = _infer_prompt_data_type(lower_text, config.get("symbols"), freq)
+    if data_type:
+        config["data_type"] = data_type
+    else:
+        config["data_type"] = "main"
+    summary.append(f"数据类型：{config['data_type']}")
+
+    start_date, end_date = _infer_prompt_dates(text, lower_text, today=today)
+    if start_date:
+        config["start_date"] = start_date
+    elif not config.get("start_date"):
+        config["start_date"] = f"{today.year}-01-01"
+        warnings.append("没有识别到开始日期，暂时使用今年年初。")
+    if end_date:
+        config["end_date"] = end_date
+    elif not config.get("end_date"):
+        config["end_date"] = today.isoformat()
+        warnings.append("没有识别到结束日期，暂时使用今天。")
+    summary.append(f"区间：{config['start_date']} 到 {config['end_date']}")
+
+    config.setdefault("initial_capital", 5_000_000.0)
+    config.setdefault("enable_main_rollover", True)
+    _apply_profile_defaults(config, lower_text)
+    _apply_strategy_defaults(config, strategy, lower_text)
+
+    if _date_from_config(config, "start_date", today) > _date_from_config(config, "end_date", today):
+        warnings.append("识别出的开始日期晚于结束日期，请手动检查。")
+
+    return ConfigAssistantResult(config=config, summary=summary, warnings=warnings)
+
+
+def _infer_strategy_key(text: str, available_keys: set[str], current_value) -> str:
+    candidates: list[tuple[list[str], str]] = [
+        (["zscore", "z-score", "均值回归", "反转"], "zscore_reversal"),
+        (["双均线", "dual ma", "dual_ma"], "dual_ma"),
+        (["均线", "ma"], "general_multi_ma"),
+        (["donchian", "atr", "突破"], "donchian_atr_breakout"),
+        (["vwap"], "vwap_band_reversion"),
+        (["opening", "acd", "开盘区间"], "opening_range_acd"),
+        (["tick", "scalp", "剥头皮", "异常"], "tick_anomaly_scalping"),
+        (["factor", "因子", "截面"], "composite_factor"),
+    ]
+    for tokens, key in candidates:
+        if key in available_keys and any(token in text for token in tokens):
+            return key
+    current = str(current_value or "").strip().lower()
+    if current in available_keys:
+        return current
+    return "general_multi_ma" if "general_multi_ma" in available_keys else sorted(available_keys)[0]
+
+
+def _infer_prompt_symbols(text: str) -> list[str]:
+    symbols: list[str] = []
+    for name, symbol in NAME_TO_SYMBOL_HINTS.items():
+        if name in text and symbol not in symbols:
+            symbols.append(symbol)
+
+    for match in re.findall(r"\b([A-Za-z]{1,4}\d{3,4}|[A-Za-z]{1,4})\b", text):
+        symbol = match.lower()
+        if symbol in CONFIG_ASSISTANT_IGNORED_TOKENS:
+            continue
+        if symbol not in symbols:
+            symbols.append(symbol)
+    return symbols
+
+
+def _infer_prompt_freq(text: str) -> str | None:
+    if any(token in text for token in ["tick", "逐笔", "分笔"]):
+        return "tick"
+    if any(token in text for token in ["5m", "5min", "5分钟", "5分"]):
+        return "5m"
+    if any(token in text for token in ["1m", "1min", "1分钟", "1分"]):
+        return "1m"
+    if any(token in text for token in ["1d", "daily", "日线", "日频"]):
+        return "1d"
+    return None
+
+
+def _infer_prompt_data_type(text: str, symbols, freq: str) -> str | None:
+    if freq == "tick":
+        return "main"
+    if "指数" in text:
+        return "index"
+    if "复权" in text and freq == "1m":
+        return "main_adj"
+    symbol_list = _coerce_symbols(symbols)
+    if symbol_list and any(re.search(r"\d", symbol) for symbol in symbol_list):
+        return "all"
+    if "单合约" in text or "具体合约" in text:
+        return "all"
+    return "main"
+
+
+def _infer_prompt_dates(text: str, lower_text: str, *, today: date) -> tuple[str | None, str | None]:
+    iso_dates = re.findall(r"(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})", text)
+    normalized = [f"{int(y):04d}-{int(m):02d}-{int(d):02d}" for y, m, d in iso_dates]
+    if len(normalized) >= 2:
+        return normalized[0], normalized[1]
+    if len(normalized) == 1:
+        return normalized[0], today.isoformat() if _mentions_current_time(lower_text) else None
+
+    compact_dates = re.findall(r"\b(20\d{6})\b", text)
+    compact = [f"{value[:4]}-{value[4:6]}-{value[6:8]}" for value in compact_dates]
+    if len(compact) >= 2:
+        return compact[0], compact[1]
+
+    year_to_now = re.search(r"(20\d{2})\s*(?:年)?\s*(?:到|至|~|-)\s*(?:现在|今天|now|today)", text, re.I)
+    if year_to_now:
+        return f"{int(year_to_now.group(1)):04d}-01-01", today.isoformat()
+
+    year_only = re.search(r"(20\d{2})\s*年", text)
+    if year_only:
+        year = int(year_only.group(1))
+        return f"{year:04d}-01-01", today.isoformat() if _mentions_current_time(lower_text) else f"{year:04d}-12-31"
+
+    if "今年" in text:
+        return f"{today.year}-01-01", today.isoformat()
+    if "去年" in text:
+        year = today.year - 1
+        return f"{year}-01-01", f"{year}-12-31"
+    return None, None
+
+
+def _mentions_current_time(text: str) -> bool:
+    return any(token in text for token in ["now", "today", "现在", "今天", "当前", "至今", "到现在"])
+
+
+def _apply_profile_defaults(config: dict, text: str) -> None:
+    conservative = any(token in text for token in ["保守", "稳健", "小仓位", "低风险"])
+    aggressive = any(token in text for token in ["激进", "高风险", "大仓位"])
+    config.setdefault("sizing_mode", "equity_pct")
+    config.setdefault("min_volume", 1)
+    config.setdefault("order_type", "market")
+    config.setdefault("price_field", "close")
+    config.setdefault("slippage_ticks", 0.5)
+    config.setdefault("limit_mode", "at_close")
+    config.setdefault("close_pct", 1.0)
+    config.setdefault("allow_reverse", True)
+    config.setdefault("respect_pending_orders", True)
+
+    if conservative:
+        config["sizing_value"] = 0.02
+        config["max_volume"] = 1
+    elif aggressive:
+        config["sizing_value"] = 0.08
+        config["max_volume"] = None
+    else:
+        config.setdefault("sizing_value", 0.03)
+        config.setdefault("max_volume", None)
+
+
+def _apply_strategy_defaults(config: dict, strategy: str, text: str) -> None:
+    conservative = any(token in text for token in ["保守", "稳健", "小仓位", "低风险"])
+    aggressive = any(token in text for token in ["激进", "高风险", "大仓位"])
+    if strategy in {"general_multi_ma", "dual_ma"}:
+        config.setdefault("fast_window", 10 if not conservative else 20)
+        config.setdefault("slow_window", 30 if not conservative else 60)
+    elif strategy == "zscore_reversal":
+        config.setdefault("lookback", 20 if conservative else 10)
+        config.setdefault("entry_z", 2.6 if conservative else (1.8 if aggressive else 2.1))
+        config.setdefault("first_exit_z", 0.0)
+        config.setdefault("final_exit_z", 1.0)
+    elif strategy == "donchian_atr_breakout":
+        config.setdefault("donchian_window", 200 if conservative else 144)
+        config.setdefault("atr_period", 72)
+        config.setdefault("trend_window", 240)
+        config.setdefault("breakout_buffer_ticks", 3.0 if conservative else 2.0)
+
+
+def _render_config_assistant(dm: BacktestDataManager, active_config: dict, available_keys: set[str]) -> dict | None:
+    st.markdown("#### Agent 配置助手（试验）")
+    st.caption("先把自然语言变成当前表单配置草案；确认后再应用，不会自动运行回测。")
+
+    prompt = st.text_area(
+        "描述你想测试的回测",
+        key=CONFIG_ASSISTANT_PROMPT_KEY,
+        height=72,
+        placeholder="例如：我想测黄金日线，2024 到现在，ZScore 反转策略，保守一点",
+    )
+    action_col, clear_col = st.columns([1, 4])
+    if action_col.button("生成配置草案", type="primary", use_container_width=True):
+        if not str(prompt or "").strip():
+            st.session_state.pop(CONFIG_ASSISTANT_DRAFT_KEY, None)
+            st.warning("请先在文本框里输入你的需求。灰色示例只是占位提示，不会自动作为输入。")
+        else:
+            result = build_backtest_config_draft(prompt, active_config, available_keys)
+            st.session_state[CONFIG_ASSISTANT_DRAFT_KEY] = {
+                "config": result.config,
+                "summary": result.summary,
+                "warnings": result.warnings,
+            }
+    if clear_col.button("清空配置草案", use_container_width=True):
+        st.session_state.pop(CONFIG_ASSISTANT_DRAFT_KEY, None)
+        st.rerun()
+
+    draft = st.session_state.get(CONFIG_ASSISTANT_DRAFT_KEY)
+    if not isinstance(draft, dict):
+        return None
+    for item in draft.get("summary", []):
+        st.markdown(f"- {item}")
+    for item in draft.get("warnings", []):
+        st.warning(item)
+    with st.expander("查看配置草案 JSON", expanded=False):
+        st.json(draft.get("config", {}))
+    apply_col, _ = st.columns([1, 4])
+    if apply_col.button("应用到当前表单", use_container_width=True):
+        config = draft.get("config", {})
+        if isinstance(config, dict):
+            active_path = dm.write_active_config(config)
+            try:
+                source_mtime = active_path.stat().st_mtime
+            except OSError:
+                source_mtime = None
+            _set_selected_symbols(_coerce_symbols(config.get("symbols")), source_mtime=source_mtime)
+            st.session_state.pop(CONFIG_ASSISTANT_DRAFT_KEY, None)
+            st.success("Agent 配置草案已应用到当前表单，请检查后再运行回测。")
+            return config
+    return None
 
 
 def _parse_symbol_text(value: str) -> list[str]:
@@ -233,6 +561,27 @@ def _coerce_symbols(value) -> list[str]:
 
 def _symbol_key(code: str) -> str:
     return str(code).strip().lower()
+
+
+def _symbol_display_name(code: str) -> str:
+    key = _symbol_key(code)
+    matches = [
+        str(name)
+        for name, mapped_code in NAME_TO_CODE.items()
+        if _symbol_key(mapped_code) == key
+    ]
+    if not matches:
+        return ""
+    return sorted(matches, key=lambda item: (len(item), item))[0]
+
+
+def _symbol_button_label(code: str) -> str:
+    name = _symbol_display_name(code)
+    return f"{name} {code}" if name else str(code)
+
+
+def _symbol_selection_label(code: str) -> str:
+    return _symbol_button_label(code)
 
 
 def _normalize_sector_name(raw_sector) -> str:
@@ -283,8 +632,10 @@ def _selected_symbols() -> list[str]:
     return list(st.session_state[SELECTED_SYMBOLS_KEY])
 
 
-def _set_selected_symbols(symbols):
+def _set_selected_symbols(symbols, source_mtime: float | None = None):
     st.session_state[SELECTED_SYMBOLS_KEY] = _ordered_symbols(symbols)
+    if source_mtime is not None:
+        st.session_state[ACTIVE_CONFIG_SOURCE_MTIME_KEY] = float(source_mtime)
 
 
 def _toggle_symbol(code: str):
@@ -354,7 +705,7 @@ def _symbol_pool_selector() -> list[str]:
                 key = _symbol_key(code)
                 button_type = "primary" if key in selected else "secondary"
                 if columns[index].button(
-                    code,
+                    _symbol_button_label(code),
                     key=f"toggle_symbol_{key}",
                     type=button_type,
                     use_container_width=True,
@@ -362,7 +713,8 @@ def _symbol_pool_selector() -> list[str]:
                     _toggle_symbol(code)
 
     ordered_selected = _selected_symbols()
-    st.caption("当前品种池: " + (", ".join(ordered_selected) if ordered_selected else "未选择品种"))
+    selected_labels = [_symbol_selection_label(code) for code in ordered_selected]
+    st.caption("当前品种池: " + (", ".join(selected_labels) if selected_labels else "未选择品种"))
     return ordered_selected
 
 
@@ -675,10 +1027,12 @@ def _market_fields(active_config: dict):
     start_date = start_col.date_input(
         "开始日期",
         value=_date_from_config(active_config, "start_date", date(2021, 1, 1)),
+        key="backtest_start_date",
     )
     end_date = end_col.date_input(
         "结束日期",
         value=_date_from_config(active_config, "end_date", date(2022, 1, 1)),
+        key="backtest_end_date",
     )
 
     return {
@@ -1335,6 +1689,155 @@ def _strategy_parameter_fields(strategy_key: str, active_config: dict):
             )),
         }
 
+    if strategy_key == "abs_ret_rolling_validation":
+        col_1, col_2, col_3, col_4 = st.columns(4)
+        col_5, col_6, col_7, col_8 = st.columns(4)
+        col_9, col_10, col_11, col_12 = st.columns(4)
+        validation_mode_options = ["monthly_prior", "aggregate"]
+        edge_mode_options = ["rolling", "static", "none"]
+        time_column_options = ["end_datetime", "start_datetime"]
+        signal_frequency_options = ["daily", "intraday"]
+        daily_policy_options = ["strongest", "last", "first"]
+        universe_mode_options = ["all_predictions", "validated_products"]
+        prediction_mode_options = ["online_model", "replay_csv"]
+        st.caption(
+            "AbsRet runs as a daily strategy on concrete contracts. Online mode loads the saved model and feature cache to generate predictions during backtest setup; replay mode is only for checking an existing prediction CSV."
+        )
+        return {
+            "model_name": str(col_1.text_input(
+                "Model Name",
+                value=str(active_config.get("model_name", "hybrid_product")),
+            )),
+            "min_validation_hit_rate": float(col_2.number_input(
+                "Min Validation Hit Rate",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(active_config.get("min_validation_hit_rate", 0.60)),
+                step=0.01,
+                format="%.2f",
+            )),
+            "max_total_margin_pct": float(col_3.number_input(
+                "Max Total Margin %",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(active_config.get("max_total_margin_pct", 0.30)),
+                step=0.05,
+                format="%.2f",
+            )),
+            "edge_quantile": float(col_4.number_input(
+                "Edge Quantile",
+                min_value=0.0,
+                max_value=1.0,
+                value=float(active_config.get("edge_quantile", 0.90)),
+                step=0.01,
+                format="%.2f",
+            )),
+            "validation_mode": col_5.selectbox(
+                "Validation Mode",
+                validation_mode_options,
+                index=_option_index(validation_mode_options, active_config.get("validation_mode", "monthly_prior")),
+            ),
+            "edge_threshold_mode": col_6.selectbox(
+                "Edge Threshold Mode",
+                edge_mode_options,
+                index=_option_index(edge_mode_options, active_config.get("edge_threshold_mode", "rolling")),
+            ),
+            "signal_time_column": col_7.selectbox(
+                "Signal Time Column",
+                time_column_options,
+                index=_option_index(time_column_options, active_config.get("signal_time_column", "end_datetime")),
+            ),
+            "max_positions": int(col_8.number_input(
+                "Max Positions (0=unlimited)",
+                min_value=0,
+                value=int(active_config.get("max_positions", 0) or 0),
+                step=1,
+            )),
+            "validation_lookback_months": int(col_9.number_input(
+                "Validation Lookback Months",
+                min_value=1,
+                value=int(active_config.get("validation_lookback_months", 3)),
+                step=1,
+            )),
+            "edge_threshold_lookback": int(col_10.number_input(
+                "Edge Lookback Rows",
+                min_value=0,
+                value=int(active_config.get("edge_threshold_lookback", 5000)),
+                step=500,
+            )),
+            "min_threshold_history": int(col_11.number_input(
+                "Min Edge History",
+                min_value=1,
+                value=int(active_config.get("min_threshold_history", 200)),
+                step=50,
+            )),
+            "absret_max_symbols": int(col_12.number_input(
+                "Max Contracts (0=all matched)",
+                min_value=0,
+                value=int(active_config.get("absret_max_symbols", 0) or 0),
+                step=1,
+            )),
+            "absret_universe_mode": st.selectbox(
+                "Universe Mode",
+                universe_mode_options,
+                index=_option_index(universe_mode_options, active_config.get("absret_universe_mode", "all_predictions")),
+            ),
+            "prediction_mode": st.selectbox(
+                "Prediction Mode",
+                prediction_mode_options,
+                index=_option_index(prediction_mode_options, active_config.get("prediction_mode", "online_model")),
+            ),
+            "model_available_date": str(st.text_input(
+                "Model Available Date",
+                value=str(active_config.get("model_available_date", "2025-07-01")),
+            )),
+            "min_signal_confidence": float(st.number_input(
+                "Min Signal Confidence",
+                min_value=0.50,
+                max_value=1.00,
+                value=float(active_config.get("min_signal_confidence", 0.60)),
+                step=0.01,
+                format="%.2f",
+            )),
+            "daily_signal_cutoff_hour": int(st.number_input(
+                "Daily Signal Cutoff Hour",
+                min_value=0,
+                max_value=23,
+                value=int(active_config.get("daily_signal_cutoff_hour", 21)),
+                step=1,
+            )),
+            "signal_frequency": st.selectbox(
+                "Signal Frequency",
+                signal_frequency_options,
+                index=_option_index(signal_frequency_options, active_config.get("signal_frequency", "daily")),
+            ),
+            "daily_signal_policy": st.selectbox(
+                "Daily Signal Policy",
+                daily_policy_options,
+                index=_option_index(daily_policy_options, active_config.get("daily_signal_policy", "strongest")),
+            ),
+            "one_contract_per_product": bool(st.checkbox(
+                "One contract per product",
+                value=_bool_from_config(active_config, "one_contract_per_product", True),
+            )),
+            "close_on_failed_signal": bool(st.checkbox(
+                "Close when signal drops below filter",
+                value=_bool_from_config(active_config, "close_on_failed_signal", True),
+            )),
+            "signal_path": str(st.text_input(
+                "Signal CSV path (blank=default)",
+                value=str(active_config.get("signal_path", "")),
+            )),
+            "validation_path": str(st.text_input(
+                "Validation CSV path (blank=default)",
+                value=str(active_config.get("validation_path", "")),
+            )),
+            "monthly_validation_path": str(st.text_input(
+                "Monthly validation CSV path (blank=default)",
+                value=str(active_config.get("monthly_validation_path", "")),
+            )),
+        }
+
     if strategy_key in {"composite_factor", "cross_momentum"}:
         col_1, col_2, col_3 = st.columns(3)
         return {
@@ -1401,7 +1904,12 @@ def main():
         st.error("未发现可运行策略，请检查 strategy 目录。")
         return
 
-    config_tab, guide_tab = st.tabs(["参数配置 (Configuration)", "策略说明 (Guide)"])
+    config_tab, pulse_tab, agent_tab, guide_tab = st.tabs([
+        "参数配置 (Configuration)",
+        "脉冲发现 (Pulse Discovery)",
+        "Agent 助手",
+        "策略说明 (Guide)",
+    ])
     with config_tab:
         notice = st.session_state.pop(RUN_NOTICE_KEY, None)
         if isinstance(notice, dict):
@@ -1415,6 +1923,10 @@ def main():
                 st.info(message)
 
         strategy_keys = [item["key"] for item in available]
+        applied_config = _render_config_assistant(dm, active_config, set(strategy_keys))
+        if isinstance(applied_config, dict):
+            active_config = applied_config
+
         active_strategy = str(active_config.get("strategy", "general_multi_ma")).strip().lower()
         if active_strategy not in strategy_keys:
             active_strategy = "general_multi_ma" if "general_multi_ma" in strategy_keys else strategy_keys[0]
@@ -1444,7 +1956,7 @@ def main():
         timeout_seconds = int(col_2.number_input("运行超时秒数 (0=不限)", min_value=0, value=0, step=60))
         config["enable_main_rollover"] = bool(enable_main_rollover)
 
-        can_run = bool(config["symbols"])
+        can_run = bool(config["symbols"]) or strategy_key == "abs_ret_rolling_validation"
         running_lock = _read_run_lock()
         if running_lock:
             try:
@@ -1514,6 +2026,12 @@ def main():
         if st.session_state.get("last_run_output"):
             with st.expander("最近一次运行输出", expanded=False):
                 st.code(st.session_state["last_run_output"])
+
+    with pulse_tab:
+        render_pulse_panel()
+
+    with agent_tab:
+        render_agent_panel()
 
     with guide_tab:
         _guide()

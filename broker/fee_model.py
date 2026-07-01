@@ -11,7 +11,7 @@ if PROJECT_ROOT not in sys.path:
     sys.path.append(PROJECT_ROOT)
 
 # 交易费率和合约乘数统一来自 config.FEE_DICT。
-from config import FEE_DICT
+from config import FEE_DICT, pure_product_code
 from .order import Offset
 
 
@@ -26,7 +26,7 @@ class FeeModel:
 
     def _get_meta_data(self, symbol: str) -> dict:
         """从天勤代码提取纯代码，并去 FEE_DICT 里精准查表"""
-        raw_code = symbol.split('.')[-1]
+        raw_code = pure_product_code(symbol)
 
         # 智能匹配：原样 -> 大写 -> 小写，确保绝对能命中字典
         meta = FEE_DICT.get(raw_code) or FEE_DICT.get(raw_code.upper()) or FEE_DICT.get(raw_code.lower())

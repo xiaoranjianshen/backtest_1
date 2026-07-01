@@ -2,14 +2,20 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-from datetime import timedelta
+from datetime import time, timedelta
+from typing import Iterable
 
 import lightgbm as lgb
 import numpy as np
 import pandas as pd
 
 from config import FEE_DICT, SYMBOL_DICT, pure_product_code
+from strategy.common.universe import (
+    UniverseSelectionEntry,
+    ensure_universe_selector,
+    selection_metrics,
+)
+from strategy.custom.donchian_atr_breakout import DonchianATRBreakoutStrategy
 from strategy.custom.opening_range_acd import OpeningRangeACDStrategy
 
 
@@ -38,11 +44,7 @@ FEATURE_COLUMNS = [
 ]
 
 
-@dataclass(frozen=True)
-class SelectorEntry:
-    rank: int
-    score: float
-    weight: float
+SelectorEntry = UniverseSelectionEntry
 
 
 class AmplitudeRankACDStrategy(OpeningRangeACDStrategy):
@@ -58,15 +60,19 @@ class AmplitudeRankACDStrategy(OpeningRangeACDStrategy):
         *args,
         selector_by_date: dict | None = None,
         require_selector: bool = True,
+        universe_selector=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
-        self.selector_by_date = self._normalize_selector(selector_by_date or {})
+        self.universe_selector = ensure_universe_selector(
+            universe_selector if universe_selector is not None else (selector_by_date or {}),
+            name="amplitude_rank",
+        )
         self.require_selector = bool(require_selector)
 
     def on_init(self):
         super().on_init()
-        selected_days = len(self.selector_by_date)
+        selected_days = self.universe_selector.selected_days()
         print(
             f"[Strategy AmplitudeRankACD] selector_days={selected_days} | "
             f"require_selector={self.require_selector}"
@@ -89,15 +95,7 @@ class AmplitudeRankACDStrategy(OpeningRangeACDStrategy):
         entry = self._selector_entry(sym)
         selector_date = self._selector_date()
         snapshot["selector_date"] = selector_date
-        snapshot["selector_selected"] = entry is not None
-        if entry is not None:
-            snapshot["selector_rank"] = entry.rank
-            snapshot["selector_score"] = entry.score
-            snapshot["selector_weight"] = entry.weight
-        else:
-            snapshot["selector_rank"] = None
-            snapshot["selector_score"] = None
-            snapshot["selector_weight"] = 0.0
+        snapshot.update(selection_metrics(entry))
         return snapshot
 
     @staticmethod
@@ -115,26 +113,149 @@ class AmplitudeRankACDStrategy(OpeningRangeACDStrategy):
         return self._trading_date(self.current_time).isoformat()
 
     def _selector_entry(self, sym: str) -> SelectorEntry | None:
-        day_map = self.selector_by_date.get(self._selector_date(), {})
-        return day_map.get(pure_product_code(sym))
+        return self.universe_selector.entry(self._selector_date(), sym)
+
+
+class AmplitudeRankDonchianStrategy(DonchianATRBreakoutStrategy):
+    """
+    Donchian/ATR breakout strategy gated by the daily amplitude-rank selector.
+
+    This pairs the high-volatility selector with a slower channel breakout,
+    avoiding the very short opening-range entries used by ACD.
+    """
+
+    def __init__(
+        self,
+        *args,
+        selector_by_date: dict | None = None,
+        require_selector: bool = True,
+        universe_selector=None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.universe_selector = ensure_universe_selector(
+            universe_selector if universe_selector is not None else (selector_by_date or {}),
+            name="amplitude_rank",
+        )
+        self.require_selector = bool(require_selector)
+
+    def on_init(self):
+        super().on_init()
+        print(
+            f"[Strategy AmplitudeRankDonchian] selector_days={self.universe_selector.selected_days()} | "
+            f"require_selector={self.require_selector}"
+        )
+
+    def _entry_block_reason(self, sym: str) -> str | None:
+        base_reason = super()._entry_block_reason(sym)
+        if base_reason:
+            return base_reason
+        if self.require_selector and self._selector_entry(sym) is None:
+            return "not_selected_by_amplitude_rank"
+        return None
+
+    def _snapshot(self, sym: str, bar) -> dict:
+        snapshot = super()._snapshot(sym, bar)
+        entry = self._selector_entry(sym)
+        snapshot["selector_date"] = self._selector_date()
+        snapshot.update(selection_metrics(entry))
+        return snapshot
 
     @staticmethod
-    def _normalize_selector(raw_selector: dict) -> dict[str, dict[str, SelectorEntry]]:
-        normalized: dict[str, dict[str, SelectorEntry]] = {}
-        for date_key, entries in raw_selector.items():
-            date_text = pd.Timestamp(date_key).date().isoformat()
-            normalized[date_text] = {}
-            for sym, value in (entries or {}).items():
-                raw_sym = pure_product_code(sym)
-                if isinstance(value, SelectorEntry):
-                    normalized[date_text][raw_sym] = value
-                else:
-                    normalized[date_text][raw_sym] = SelectorEntry(
-                        rank=int(value.get("rank", 0)),
-                        score=float(value.get("score", 0.0)),
-                        weight=float(value.get("weight", 0.0)),
-                    )
-        return normalized
+    def _open_signal(direction: int, reason: str, metrics: dict) -> dict:
+        return {
+            "signal": int(direction),
+            "position_mode": "target",
+            "size_scale": metrics.get("indicator_selector_weight"),
+            "reason": reason,
+            "metrics": metrics,
+        }
+
+    def _selector_date(self) -> str:
+        return self.current_time.date().isoformat()
+
+    def _selector_entry(self, sym: str) -> SelectorEntry | None:
+        return self.universe_selector.entry(self._selector_date(), sym)
+
+
+class AmplitudeRankDayBreakoutStrategy(AmplitudeRankACDStrategy):
+    """
+    Daily amplitude-rank selector with intraday confirmed breakout execution.
+
+    The LightGBM selector predicts which symbols are likely to have large
+    next-day ranges. It does not predict direction. This strategy therefore
+    waits for an opening-range breakout on the selected trading day and enters
+    only after the breakout persists for a configurable number of bars.
+    """
+
+    def __init__(
+        self,
+        *args,
+        confirm_bars: int = 2,
+        flatten_time: str | None = "14:45",
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.confirm_bars = max(1, int(confirm_bars))
+        self.flatten_time = _parse_hhmm(flatten_time)
+        self.breakout_confirm: dict[str, tuple[int, int]] = {sym: (0, 0) for sym in self.symbols}
+
+    def on_init(self):
+        super().on_init()
+        print(
+            f"[Strategy AmplitudeRankDayBreakout] confirm_bars={self.confirm_bars} | "
+            f"flatten_time={self.flatten_time}"
+        )
+
+    def _flat_signal(self, sym: str, price: float, current_net: int, snapshot: dict) -> dict:
+        blocked = self._entry_block_reason(sym)
+        if blocked:
+            self.breakout_confirm[sym] = (0, 0)
+            return self._hold_signal(blocked, price, current_net, snapshot)
+        if not snapshot["ready"]:
+            self.breakout_confirm[sym] = (0, 0)
+            return self._hold_signal(snapshot["reason"], price, current_net, snapshot)
+
+        upper = snapshot["opening_high"]
+        lower = snapshot["opening_low"]
+        atr = snapshot["atr"]
+        ema = snapshot["ema"]
+        tick_size = snapshot["tick_size"]
+        buffer = self.breakout_buffer_ticks * tick_size
+        extension_limit = self.max_extension_atr * atr
+
+        long_breakout = price > upper + buffer and price > ema and price - upper <= extension_limit
+        short_breakout = price < lower - buffer and price < ema and lower - price <= extension_limit
+        direction = 1 if long_breakout else -1 if short_breakout else 0
+
+        previous_direction, count = self.breakout_confirm.get(sym, (0, 0))
+        if direction == 0:
+            self.breakout_confirm[sym] = (0, 0)
+            return self._hold_signal("hold", price, current_net, snapshot)
+
+        count = count + 1 if direction == previous_direction else 1
+        self.breakout_confirm[sym] = (direction, count)
+        metrics = self._metrics(price, current_net, snapshot)
+        metrics["breakout_confirm_count"] = count
+
+        if count < self.confirm_bars:
+            return self._hold_signal("breakout_confirming", price, current_net, snapshot)
+
+        self._register_entry(sym)
+        reason = "confirmed_opening_range_breakout" if direction > 0 else "confirmed_opening_range_breakdown"
+        return self._open_signal(direction, reason, metrics)
+
+    def _position_signal(self, sym: str, price: float, current_net: int, snapshot: dict) -> dict:
+        if self._should_flatten_now():
+            metrics = self._metrics(price, current_net, snapshot)
+            return self._exit_signal("trading_day_end_flatten", metrics)
+        return super()._position_signal(sym, price, current_net, snapshot)
+
+    def _should_flatten_now(self) -> bool:
+        if self.flatten_time is None:
+            return False
+        current = self.current_time.time()
+        return current >= self.flatten_time and self.current_time.hour < 21
 
 
 def build_amplitude_rank_selector(
@@ -145,6 +266,8 @@ def build_amplitude_rank_selector(
     weight_method: str = "score",
     max_per_sector: int | None = None,
     min_daily_turnover: float = 1e9,
+    max_round_trip_cost_bps: float | None = None,
+    exclude_symbols: Iterable[str] | None = None,
     train_start: str | None = None,
     random_state: int = 42,
 ) -> tuple[dict[str, dict[str, dict]], pd.DataFrame]:
@@ -157,6 +280,11 @@ def build_amplitude_rank_selector(
 
     long_df = _wide_daily_to_long(daily_wide_df)
     feature_df = _build_amplitude_features(long_df, min_daily_turnover=min_daily_turnover)
+    if exclude_symbols:
+        excluded = {pure_product_code(sym) for sym in exclude_symbols}
+        feature_df = feature_df[~feature_df["symbol"].map(pure_product_code).isin(excluded)].copy()
+    if max_round_trip_cost_bps is not None:
+        feature_df = feature_df[feature_df["round_trip_cost_bps"] <= float(max_round_trip_cost_bps)].copy()
 
     start_ts = pd.Timestamp(backtest_start).normalize()
     end_ts = pd.Timestamp(backtest_end).normalize()
@@ -255,6 +383,9 @@ def _build_amplitude_features(df: pd.DataFrame, min_daily_turnover: float) -> pd
     df["oi_change_rate"] = (df["oi"] - prev_oi) / (prev_oi + 1e-8)
     df["turnover"] = df["volume"] * df["close"] * df["multiplier"]
     df["net_capital_flow"] = (df["oi"] - prev_oi) * df["close"] * df["multiplier"]
+    df["round_trip_cost_bps"] = [
+        _round_trip_cost_bps(sym, close) for sym, close in zip(df["symbol"], df["close"])
+    ]
 
     df["ret_1d_dir"] = df["close"] / prev_close - 1.0
     df["ret_5d_dir"] = df["close"] / grouped["close"].shift(5) - 1.0
@@ -363,6 +494,7 @@ def _build_next_day_topn_map(
                 "weight": float(weight),
                 "amp_today": float(row.amp_today),
                 "turnover": float(row.turnover),
+                "round_trip_cost_bps": float(row.round_trip_cost_bps),
             })
 
     return selector, pd.DataFrame(rows)
@@ -394,3 +526,28 @@ def _symbol_sector(symbol: str) -> str:
         if code.lower() == raw:
             return str(meta[3])
     return "unknown"
+
+
+def _round_trip_cost_bps(symbol: str, close: float) -> float:
+    raw = pure_product_code(symbol)
+    meta = FEE_DICT.get(raw, {})
+    multiplier = float(meta.get("multiplier", 1.0))
+    notional = float(close) * multiplier
+    if notional <= 0:
+        return np.nan
+
+    open_fee = float(meta.get("fee_open", 0.0))
+    close_fee = max(
+        float(meta.get("fee_close_history", open_fee)),
+        float(meta.get("fee_close_today", open_fee)),
+    )
+    if str(meta.get("fee_type", "fixed")).lower() == "ratio":
+        return (open_fee + close_fee) * 10000.0
+    return (open_fee + close_fee) / notional * 10000.0
+
+
+def _parse_hhmm(value: str | None) -> time | None:
+    if value in (None, "", "none"):
+        return None
+    hour_text, minute_text = str(value).strip().split(":", 1)
+    return time(hour=int(hour_text), minute=int(minute_text))

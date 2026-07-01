@@ -4,7 +4,7 @@ import math
 import pandas as pd
 
 from broker.order import Direction, OrderType
-from config import pure_product_code
+from config import trade_symbol_code
 from strategy.common.execution import ExecutionPolicy
 from strategy.common.sizing import PositionSizer
 from strategy.common.types import ExitConfig, coerce_exit_config, normalize_signal
@@ -40,11 +40,17 @@ class SignalRebalancer:
                 "reason": intent.reason,
                 "current_net": current_net,
                 "working_net": working_net,
+                "signal_score": intent.signal_score,
+                "target_weight": intent.target_weight,
+                "target_margin_pct": intent.target_margin_pct,
+                "risk_pct": intent.risk_pct,
+                "stop_loss_ticks": intent.stop_loss_ticks,
+                "stop_loss_price": intent.stop_loss_price,
                 "metrics": intent.metrics,
                 **intent.extra,
             }
 
-            if intent.direction is None and intent.target_net is None and intent.position_mode is None:
+            if self._is_hold_intent(intent):
                 record.update({"target_net": working_net, "diff": 0, "action": "hold"})
                 records.append(record)
                 continue
@@ -78,7 +84,23 @@ class SignalRebalancer:
         if mode == "flat":
             return 0
 
-        direction = intent.direction
+        if intent.target_weight is not None:
+            direction = self._resolve_direction(intent)
+            target_volume = self.sizer.calculate_target_weight(
+                sym, bar["close"], self.strategy.account, current_prices, float(intent.target_weight)
+            )
+            target_net = 0 if direction in (None, 0) else int(direction) * target_volume
+            return self._apply_reverse_rule(current_net, target_net)
+
+        if intent.target_margin_pct is not None:
+            direction = self._resolve_direction(intent)
+            target_volume = self.sizer.calculate_target_margin_pct(
+                sym, bar["close"], self.strategy.account, current_prices, float(intent.target_margin_pct)
+            )
+            target_net = 0 if direction in (None, 0) else int(direction) * target_volume
+            return self._apply_reverse_rule(current_net, target_net)
+
+        direction = self._resolve_direction(intent)
         if direction == 0 or mode == "reduce":
             return self._target_after_close(current_net, intent)
 
@@ -94,7 +116,7 @@ class SignalRebalancer:
             target_net = self._cap_abs_target(target_net, max_abs_volume)
             return self._apply_reverse_rule(current_net, target_net)
 
-        target_volume = self._target_volume(base_volume, intent)
+        target_volume = self._target_volume(sym, bar, current_prices, base_volume, intent)
         target_net = int(direction) * target_volume
         target_net = self._cap_abs_target(target_net, max_abs_volume)
         return self._apply_reverse_rule(current_net, target_net)
@@ -115,9 +137,20 @@ class SignalRebalancer:
             return current_net - close_volume
         return current_net + close_volume
 
-    def _target_volume(self, base_volume: int, intent) -> int:
+    def _target_volume(self, sym: str, bar: dict, current_prices: dict, base_volume: int, intent) -> int:
         if intent.target_volume is not None:
             return max(0, int(intent.target_volume))
+
+        if intent.risk_pct is not None:
+            return self.sizer.calculate_risk_pct(
+                symbol=sym,
+                price=bar["close"],
+                account=self.strategy.account,
+                current_prices=current_prices,
+                risk_pct=float(intent.risk_pct),
+                stop_loss_ticks=intent.stop_loss_ticks,
+                stop_loss_price=intent.stop_loss_price,
+            )
 
         scale = intent.target_pct if intent.target_pct is not None else intent.size_scale
         if scale is None:
@@ -164,6 +197,34 @@ class SignalRebalancer:
         if not self.exit_config.allow_reverse and current_net * target_net < 0:
             return 0
         return target_net
+
+    @staticmethod
+    def _is_hold_intent(intent) -> bool:
+        return (
+            intent.direction is None
+            and intent.position_mode is None
+            and intent.target_net is None
+            and intent.target_weight is None
+            and intent.target_margin_pct is None
+            and intent.risk_pct is None
+        )
+
+    @staticmethod
+    def _resolve_direction(intent) -> int | None:
+        if intent.direction is not None:
+            return intent.direction
+
+        for value in (intent.target_weight, intent.target_margin_pct):
+            if value is None:
+                continue
+            numeric = float(value)
+            if numeric > 0:
+                return 1
+            if numeric < 0:
+                return -1
+            return 0
+
+        return None
 
     @staticmethod
     def _normalize_position_mode(mode: str | None, direction: int | None) -> str:
@@ -249,22 +310,22 @@ class SignalRebalancer:
             raise ValueError(f"Unsupported rebalance action: {action}")
 
     def _pending_net_delta(self, symbol: str) -> int:
-        raw_symbol = pure_product_code(symbol)
+        raw_symbol = trade_symbol_code(symbol)
         pending_delta = 0
         for order in self.strategy.broker.pending_orders:
-            if pure_product_code(order.symbol) != raw_symbol:
+            if trade_symbol_code(order.symbol) != raw_symbol:
                 continue
             pending_delta += self._order_net_delta(order)
         return pending_delta
 
     def _cancel_pending_towards_target(self, symbol: str, working_net: int, target_net: int) -> tuple[int, int]:
-        raw_symbol = pure_product_code(symbol)
+        raw_symbol = trade_symbol_code(symbol)
         canceled_count = 0
 
         for order in list(self.strategy.broker.pending_orders):
             if working_net == target_net:
                 break
-            if pure_product_code(order.symbol) != raw_symbol:
+            if trade_symbol_code(order.symbol) != raw_symbol:
                 continue
 
             delta = self._order_net_delta(order)

@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import inspect
 import pandas as pd
 import re
 
@@ -16,7 +17,7 @@ from portfolio.account import Account
 from broker.match_engine import MatchEngine
 from broker.rollover import MainContractRollover
 from analyzer.performance import StrategyAnalyzer
-from config import build_query_symbol, FEE_DICT, pure_product_code
+from config import build_query_symbol, FEE_DICT, pure_product_code, trade_symbol_code
 
 
 STRATEGY_CLASS_TO_CONFIG_KEY = {
@@ -32,6 +33,10 @@ STRATEGY_CLASS_TO_CONFIG_KEY = {
     "DonchianATRBreakoutStrategy": "donchian_atr_breakout",
     "OpeningRangeACDStrategy": "opening_range_acd",
     "AmplitudeRankACDStrategy": "amplitude_rank_acd",
+    "AmplitudeRankDayBreakoutStrategy": "amplitude_rank_day_breakout",
+    "AmplitudeRankDonchianStrategy": "amplitude_rank_donchian",
+    "TrendRankDonchianStrategy": "trend_rank_donchian",
+    "AbsRetRollingValidationStrategy": "abs_ret_rolling_validation",
     "CompositeFactorStrategy": "composite_factor",
     "CrossMomentumFactor": "cross_momentum",
 }
@@ -46,9 +51,7 @@ def extract_bar_data(row, columns_level_1):
     bar_data = {}
     for full_sym in columns_level_1:
         match = re.search(r'\((.*?)\)', full_sym)
-        if not match:
-            continue
-        raw_code = match.group(1).lower()
+        raw_code = (match.group(1) if match else str(full_sym).split('.')[-1]).lower()
         if raw_code not in bar_data:
             bar_data[raw_code] = {}
 
@@ -108,10 +111,7 @@ def extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos: dict)
     bar_data = {}
     for full_sym in columns_level_1:
         match = re.search(r'\((.*?)\)', full_sym)
-        if not match:
-            continue
-
-        raw_code = match.group(1).lower()
+        raw_code = (match.group(1) if match else str(full_sym).split('.')[-1]).lower()
         price = _tuple_value(row_values, col_pos, 'last_price', full_sym, pd.NA)
         if price is None or pd.isna(price):
             bar_data[raw_code] = {'close': pd.NA, 'month_change': 0}
@@ -186,9 +186,11 @@ def _resolve_symbols(symbols_input, data_type):
             print(f"[Engine Warning] 品种 {sym} 未在 config.py 中配置，已跳过。")
             continue
 
-        raw_input = sym.lower()
+        raw_input = str(sym).lower()
         month_match = re.match(r"^([a-z]+)(\d+)$", raw_input)
-        pure_code = month_match.group(1) if month_match else raw_input
+        pure_code = trade_symbol_code(query_sym) if data_type == 'all' and month_match else (
+            month_match.group(1) if month_match else raw_input
+        )
 
         pure_list.append(pure_code)
         full_list.append(query_sym)
@@ -217,7 +219,29 @@ def _extract_symbols_from_columns(columns_level_1) -> set[str]:
         match = re.search(r'\((.*?)\)', str(full_sym))
         raw = match.group(1) if match else str(full_sym)
         available.add(pure_product_code(raw))
+        available.add(trade_symbol_code(raw))
     return available
+
+
+def _requested_symbol_available(symbol: str, available_symbols: set[str]) -> bool:
+    raw = str(symbol).lower()
+    if re.match(r"^[a-z]+\d+$", raw):
+        return trade_symbol_code(raw) in available_symbols
+    return pure_product_code(raw) in available_symbols
+
+
+def _maybe_add_trading_calendar(strategy_class, strategy_kwargs: dict, trading_index) -> dict:
+    try:
+        parameters = inspect.signature(strategy_class.__init__).parameters
+    except (TypeError, ValueError):
+        return strategy_kwargs
+
+    if "trading_calendar" not in parameters or "trading_calendar" in strategy_kwargs:
+        return strategy_kwargs
+
+    updated = dict(strategy_kwargs)
+    updated["trading_calendar"] = [pd.Timestamp(value).normalize() for value in trading_index]
+    return updated
 
 
 def _build_run_config(
@@ -301,6 +325,25 @@ def _build_run_config(
             "trend_window",
             "exit_on_midline",
             "allowed_entry_hours",
+            "signal_path",
+            "validation_path",
+            "monthly_validation_path",
+            "model_name",
+            "min_validation_hit_rate",
+            "validation_mode",
+            "validation_lookback_months",
+            "min_validation_rows",
+            "signal_time_column",
+            "signal_frequency",
+            "daily_signal_policy",
+            "edge_quantile",
+            "edge_threshold_mode",
+            "edge_threshold_lookback",
+            "min_threshold_history",
+            "max_total_margin_pct",
+            "max_positions",
+            "one_contract_per_product",
+            "close_on_failed_signal",
         ):
             if key in strategy_kwargs:
                 config[key] = strategy_kwargs[key]
@@ -402,7 +445,7 @@ def run_backtest(
 
     columns_level_1 = list(dict.fromkeys([col[1] for col in df.columns]))
     available_symbols = _extract_symbols_from_columns(columns_level_1)
-    missing_symbols = [sym for sym in requested_symbols if pure_product_code(sym) not in available_symbols]
+    missing_symbols = [sym for sym in requested_symbols if not _requested_symbol_available(sym, available_symbols)]
     if missing_symbols:
         print(
             "[Engine Warning] 以下请求品种在实际数据矩阵中没有有效数据，已无法参与本次回测: "
@@ -422,6 +465,7 @@ def run_backtest(
     elif enable_main_rollover and data_type != 'main':
         print(f"[Engine] 换月跳过：data_type='{data_type}' 非未复权主连")
 
+    strategy_kwargs = _maybe_add_trading_calendar(strategy_class, strategy_kwargs, df.index)
     strategy = strategy_class(broker=broker, account=account, symbol=strat_sym, **strategy_kwargs)
     strategy.on_init()
 
@@ -572,7 +616,9 @@ def run_backtest(
             strategy_name=strategy_class.__name__,
             account_summary=account_summary,
             equity_df=pd.DataFrame(equity_records),
-            describe_params=describe_params
+            describe_params=describe_params,
+            signal_records=getattr(strategy, 'raw_signal_records', []),
+            rebalance_records=getattr(strategy, 'signal_records', []),
         )
         analyzer.run_config = _build_run_config(
             strategy_class=strategy_class,

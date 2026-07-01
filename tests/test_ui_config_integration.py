@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -122,6 +123,118 @@ class UiConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(args["strategy_kwargs"]["execution"]["price_field"], "last_price")
         self.assertEqual(args["strategy_kwargs"]["execution"]["limit_mode"], "better_ticks")
         self.assertEqual(args["strategy_kwargs"]["execution"]["ticks"], 2.0)
+
+    def test_abs_ret_rolling_validation_expands_products_to_contract_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            validation_path = tmp_path / "validation.csv"
+            signal_path = tmp_path / "signals.csv"
+            validation_path.write_text(
+                "experiment,product,weighted_hit_rate,rows\n"
+                "hybrid_product,c,0.70,100\n"
+                "hybrid_product,CF,0.61,100\n"
+                "hybrid_product,AP,0.55,100\n",
+                encoding="utf-8",
+            )
+            signal_path.write_text(
+                "symbol,product,experiment\n"
+                "c2507,c,hybrid_product\n"
+                "CF507,CF,hybrid_product\n"
+                "AP507,AP,hybrid_product\n",
+                encoding="utf-8",
+            )
+
+            args = build_run_arguments({
+                "strategy": "abs_ret_rolling_validation",
+                "symbols": "c,CF",
+                "start_date": "2025-07-01",
+                "end_date": "2025-07-03",
+                "prediction_mode": "replay_csv",
+                "signal_path": str(signal_path),
+                "validation_path": str(validation_path),
+                "model_name": "hybrid_product",
+                "min_validation_hit_rate": 0.60,
+                "max_total_margin_pct": 0.30,
+            })
+
+        self.assertEqual(args["strategy_class"].__module__, "strategy.custom.abs_ret_rolling_validation")
+        self.assertEqual(args["strategy_class"].__name__, "AbsRetRollingValidationStrategy")
+        self.assertEqual(args["freq"], "1d")
+        self.assertEqual(args["data_type"], "all")
+        self.assertEqual(args["symbols_input"], ["c2507", "cf507"])
+        self.assertEqual(args["strategy_kwargs"]["target_symbols"], ["c2507", "cf507"])
+        self.assertEqual(args["strategy_kwargs"]["signal_frequency"], "daily")
+        self.assertEqual(args["strategy_kwargs"]["daily_signal_policy"], "strongest")
+        self.assertEqual(args["strategy_kwargs"]["max_total_margin_pct"], 0.30)
+        self.assertEqual(args["strategy_kwargs"]["sizing"]["min_volume"], 0)
+        self.assertEqual(args["strategy_kwargs"]["min_signal_confidence"], 0.60)
+
+    def test_abs_ret_blank_selection_can_use_all_prediction_symbols(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            validation_path = tmp_path / "validation.csv"
+            signal_path = tmp_path / "signals.csv"
+            monthly_path = tmp_path / "monthly.csv"
+            validation_path.write_text(
+                "experiment,product,weighted_hit_rate,rows\n"
+                "hybrid_product,c,0.70,100\n"
+                "hybrid_product,AP,0.55,100\n",
+                encoding="utf-8",
+            )
+            monthly_path.write_text(
+                "experiment,month,product,slice,all_rows,rows,hit_rate,mean_signed_ret_pct,long_share\n"
+                "hybrid_product,2025-07,c,product_top10,100,50,0.70,0.01,0.5\n",
+                encoding="utf-8",
+            )
+            signal_path.write_text(
+                "symbol,product,experiment\n"
+                "c2507,c,hybrid_product\n"
+                "AP507,AP,hybrid_product\n",
+                encoding="utf-8",
+            )
+
+            args = build_run_arguments({
+                "strategy": "abs_ret_rolling_validation",
+                "symbols": "",
+                "prediction_mode": "replay_csv",
+                "signal_path": str(signal_path),
+                "validation_path": str(validation_path),
+                "monthly_validation_path": str(monthly_path),
+                "validation_mode": "monthly_prior",
+                "absret_universe_mode": "all_predictions",
+            })
+
+        self.assertEqual(args["symbols_input"], ["ap507", "c2507"])
+
+    def test_abs_ret_blank_selection_can_use_validated_products_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            validation_path = tmp_path / "validation.csv"
+            signal_path = tmp_path / "signals.csv"
+            validation_path.write_text(
+                "experiment,product,weighted_hit_rate,rows\n"
+                "hybrid_product,c,0.70,100\n"
+                "hybrid_product,AP,0.55,100\n",
+                encoding="utf-8",
+            )
+            signal_path.write_text(
+                "symbol,product,experiment\n"
+                "c2507,c,hybrid_product\n"
+                "AP507,AP,hybrid_product\n",
+                encoding="utf-8",
+            )
+
+            args = build_run_arguments({
+                "strategy": "abs_ret_rolling_validation",
+                "symbols": "",
+                "prediction_mode": "replay_csv",
+                "signal_path": str(signal_path),
+                "validation_path": str(validation_path),
+                "validation_mode": "aggregate",
+                "absret_universe_mode": "validated_products",
+            })
+
+        self.assertEqual(args["symbols_input"], ["c2507"])
 
 
 if __name__ == "__main__":

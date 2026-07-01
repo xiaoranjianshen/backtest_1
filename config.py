@@ -9,7 +9,7 @@ import re
 # ------------------------------------------
 CH_HOST = os.getenv('BACKTEST_CH_HOST', '192.168.99.12')
 CH_USER = os.getenv('BACKTEST_CH_USER', 'luohaoran')
-CH_PASS = os.getenv('BACKTEST_CH_PASS', 'lhr.2026')
+CH_PASS = os.getenv('BACKTEST_CH_PASS', '')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CACHE_DIR = os.path.join(BASE_DIR, 'cache_data')
@@ -294,6 +294,8 @@ def build_query_symbol(user_input: str, data_type: str) -> str | None:
             return None
         exchange = lower_dict[pure][2]
         product = product_code_for_exchange(canonical_symbol_code(pure), exchange) + digits
+        if data_type == 'all':
+            return product
         return f"{exchange}.{product}"
 
     if raw_lower not in lower_dict:
@@ -308,7 +310,7 @@ def build_query_symbol(user_input: str, data_type: str) -> str | None:
         prefix = "KQ.m@"
     else:
         prefix = ""
-    return f"{prefix}{exchange}.{product}"
+    return product if data_type == 'all' else f"{prefix}{exchange}.{product}"
 
 
 def pure_product_code(symbol: str) -> str:
@@ -318,3 +320,12 @@ def pure_product_code(symbol: str) -> str:
     raw = symbol.split('.')[-1]
     match = re.match(r'^([a-zA-Z]+)', raw)
     return match.group(1).lower() if match else raw.lower()
+
+
+def trade_symbol_code(symbol: str) -> str:
+    """Normalize a tradable symbol while preserving explicit contract months."""
+    raw = str(symbol).split('.')[-1]
+    match = re.search(r'\((.*?)\)', raw)
+    if match:
+        raw = match.group(1)
+    return raw.lower()

@@ -81,6 +81,56 @@ class AnalyzerMetricsTest(unittest.TestCase):
         self.assertEqual(float(fund_flow.iloc[2][commission_col]), 29.97)
         self.assertEqual(float(fund_flow.iloc[3][commission_col]), 29.97)
 
+    def test_signal_diagnostics_infers_target_style_signal_direction(self):
+        df = pd.DataFrame([
+            {"signal": None, "target_weight": 0.05, "target_margin_pct": None, "target_net": None, "position_mode": None},
+            {"signal": None, "target_weight": -0.05, "target_margin_pct": None, "target_net": None, "position_mode": None},
+            {"signal": None, "target_weight": 0.0, "target_margin_pct": None, "target_net": None, "position_mode": None},
+            {"signal": None, "target_weight": None, "target_margin_pct": 0.08, "target_net": None, "position_mode": None},
+            {"signal": None, "target_weight": None, "target_margin_pct": None, "target_net": -3, "position_mode": None},
+            {"signal": None, "target_weight": None, "target_margin_pct": None, "target_net": None, "position_mode": "flat"},
+            {"signal": 1, "target_weight": -0.05, "target_margin_pct": None, "target_net": None, "position_mode": None},
+        ])
+
+        inferred = StrategyAnalyzer._infer_effective_signal(df).tolist()
+
+        self.assertEqual(inferred, [1, -1, 0, 1, -1, 0, 1])
+
+    def test_signal_diagnostics_infers_signal_score_for_ic(self):
+        df = pd.DataFrame([
+            {"signal": 1, "signal_score": 0.83, "target_weight": -0.05, "target_margin_pct": None, "target_net": None, "size_scale": None, "risk_pct": None},
+            {"signal": 1, "signal_score": None, "target_weight": 0.05, "target_margin_pct": None, "target_net": None, "size_scale": None, "risk_pct": None},
+            {"signal": -1, "signal_score": None, "target_weight": None, "target_margin_pct": 0.08, "target_net": None, "size_scale": None, "risk_pct": None},
+            {"signal": None, "signal_score": None, "target_weight": None, "target_margin_pct": None, "target_net": -3, "size_scale": None, "risk_pct": None},
+            {"signal": -1, "signal_score": None, "target_weight": None, "target_margin_pct": None, "target_net": None, "size_scale": 0.5, "risk_pct": None},
+            {"signal": 1, "signal_score": None, "target_weight": None, "target_margin_pct": None, "target_net": None, "size_scale": None, "risk_pct": 0.01},
+        ])
+
+        scores = StrategyAnalyzer._infer_signal_score(df).tolist()
+
+        self.assertEqual(scores, [0.83, 0.05, 0.08, -3.0, -0.5, 0.01])
+
+    def test_signal_ic_uses_raw_forward_return_not_directional_return(self):
+        analyzer = StrategyAnalyzer(
+            trades=[],
+            price_df=pd.DataFrame(index=pd.to_datetime(["2026-01-01"])),
+            initial_capital=1_000_000.0,
+            symbol="MULTI",
+            freq="1d",
+            strategy_name="TestStrategy",
+            equity_df=pd.DataFrame([{"datetime": "2026-01-01", "equity": 1_000_000.0}]),
+        )
+        entry_df = pd.DataFrame({
+            "signal_score": [-1.0, 0.0, 1.0],
+            "fwd_1_bar_raw_return": [-0.02, 0.0, 0.02],
+            "fwd_1_bar_return": [0.02, 0.0, 0.02],
+        })
+
+        ic_df = analyzer._build_signal_ic_df(entry_df, [1])
+
+        self.assertAlmostEqual(float(ic_df.loc[0, "ic"]), 1.0)
+        self.assertAlmostEqual(float(ic_df.loc[0, "rank_ic"]), 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

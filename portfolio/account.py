@@ -12,7 +12,7 @@ if PROJECT_ROOT not in sys.path:
 
 from broker.order import Order, Trade, Direction, Offset
 from broker.fee_model import FeeModel
-from config import pure_product_code
+from config import trade_symbol_code
 
 
 class Account:
@@ -28,14 +28,14 @@ class Account:
         self.pending_margin = 0.0
 
     def estimate_required_margin(self, symbol: str, volume: int, reference_price: float) -> float:
-        raw_code = pure_product_code(symbol)
+        raw_code = trade_symbol_code(symbol)
         meta = self.fee_model._get_meta_data(raw_code)
         return reference_price * volume * meta['multiplier'] * meta['margin_rate']
 
     def estimate_required_cash(self, order: Order, reference_price: float) -> float:
         if order.offset != Offset.OPEN:
             return 0.0
-        raw_code = pure_product_code(order.symbol)
+        raw_code = trade_symbol_code(order.symbol)
         margin = self.estimate_required_margin(raw_code, order.volume, reference_price)
         commission = self.fee_model.calculate_commission(raw_code, reference_price, order.volume, Offset.OPEN)
         return margin + commission
@@ -163,7 +163,7 @@ class Account:
             pending_cash_adjustment: float = 0.0,
             available_adjustment: float = 0.0,
     ) -> bool:
-        raw_code = pure_product_code(order.symbol)
+        raw_code = trade_symbol_code(order.symbol)
 
         if order.offset == Offset.OPEN:
             # Opening orders reserve margin plus estimated commission.
@@ -216,7 +216,7 @@ class Account:
             self.pending_margin = max(0.0, self.pending_margin - reserved)
 
     def process_trade(self, trade: Trade):
-        raw_code = pure_product_code(trade.symbol)
+        raw_code = trade_symbol_code(trade.symbol)
         meta = self.fee_model._get_meta_data(raw_code)
         multiplier = meta['multiplier']
         margin_rate = meta['margin_rate']

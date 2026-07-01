@@ -5,6 +5,7 @@ from datetime import datetime
 from broker.order import Direction, Offset, Order, OrderStatus, OrderType
 from strategy.base import BaseStrategy
 from strategy.common.execution import ExecutionPolicy
+from strategy.common.portfolio import build_target_margin_signals
 from strategy.common.rebalancer import SignalRebalancer
 from strategy.common.types import normalize_signal
 
@@ -96,6 +97,58 @@ class GeneralSignalProtocolTest(unittest.TestCase):
             4,
         )
         self.assertEqual(self._target_net(2, {"signal": 1, "target_pct": 0.5}), 1)
+
+    def test_target_weight_can_drive_dynamic_universe_positions(self):
+        self.assertEqual(self._target_net(0, {"target_weight": 0.02}), 2)
+        self.assertEqual(self._target_net(0, {"target_weight": -0.02}), -2)
+        self.assertEqual(self._target_net(3, {"target_weight": 0.0}), 0)
+
+    def test_zero_target_weight_flattens_even_when_default_close_pct_is_partial(self):
+        rebalancer = SignalRebalancer(
+            _Strategy(4),
+            sizing={"mode": "fixed_volume", "value": 2},
+            execution={"order_type": "market"},
+            exit_config={"close_pct": 0.5, "allow_reverse": True},
+        )
+        bar = {"close": 100, "open": 100, "high": 101, "low": 99}
+        self.assertEqual(
+            rebalancer._resolve_target_net(
+                "rb",
+                normalize_signal({"target_weight": 0.0}),
+                bar,
+                {"rb": 100},
+                4,
+            ),
+            0,
+        )
+
+    def test_target_margin_pct_uses_contract_margin(self):
+        self.assertEqual(self._target_net(0, {"signal": 1, "target_margin_pct": 0.02}), 20)
+        self.assertEqual(self._target_net(0, {"signal": -1, "target_margin_pct": 0.02}), -20)
+
+    def test_risk_pct_uses_stop_distance_to_size_position(self):
+        self.assertEqual(
+            self._target_net(0, {"signal": 1, "risk_pct": 0.01, "stop_loss_ticks": 5}),
+            20,
+        )
+        self.assertEqual(
+            self._target_net(0, {"signal": -1, "risk_pct": 0.01, "stop_loss_price": 95}),
+            -20,
+        )
+
+    def test_portfolio_helper_builds_selected_and_removed_signals(self):
+        strategy = _Strategy(1)
+        strategy.symbols = ["rb", "hc", "i"]
+
+        signals = build_target_margin_signals(
+            strategy,
+            {"rb": 2.0, "hc": -1.0},
+            gross_margin_target=0.30,
+        )
+
+        self.assertAlmostEqual(signals["rb"]["target_margin_pct"], 0.20)
+        self.assertAlmostEqual(signals["hc"]["target_margin_pct"], -0.10)
+        self.assertEqual(signals["i"]["position_mode"], "flat")
 
     def test_unknown_position_mode_is_rejected(self):
         with self.assertRaises(ValueError):

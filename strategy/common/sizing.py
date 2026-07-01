@@ -52,6 +52,95 @@ class PositionSizer:
 
         return self._normalize_volume(raw_volume)
 
+    def calculate_target_weight(
+        self,
+        symbol: str,
+        price: float,
+        account,
+        current_prices: dict | None,
+        target_weight: float,
+    ) -> int:
+        """Return lots for a target notional/equity weight."""
+        meta = self._valid_meta(symbol, price, account)
+        if meta is None:
+            return 0
+        equity = self._current_equity(account, current_prices)
+        raw_volume = equity * abs(float(target_weight)) / meta["notional_per_lot"]
+        return self._normalize_volume(raw_volume)
+
+    def calculate_target_margin_pct(
+        self,
+        symbol: str,
+        price: float,
+        account,
+        current_prices: dict | None,
+        target_margin_pct: float,
+    ) -> int:
+        """Return lots for a target margin/equity percentage."""
+        meta = self._valid_meta(symbol, price, account)
+        if meta is None:
+            return 0
+        equity = self._current_equity(account, current_prices)
+        raw_volume = equity * abs(float(target_margin_pct)) / meta["margin_per_lot"]
+        return self._normalize_volume(raw_volume)
+
+    def calculate_risk_pct(
+        self,
+        symbol: str,
+        price: float,
+        account,
+        current_prices: dict | None,
+        risk_pct: float,
+        stop_loss_ticks: float | None = None,
+        stop_loss_price: float | None = None,
+    ) -> int:
+        """Return lots so the configured stop distance risks a percentage of equity."""
+        meta = self._valid_meta(symbol, price, account)
+        if meta is None:
+            return 0
+
+        if stop_loss_price is not None:
+            stop_distance = abs(float(price) - float(stop_loss_price))
+        elif stop_loss_ticks is not None:
+            stop_distance = abs(float(stop_loss_ticks)) * meta["tick_size"]
+        else:
+            return 0
+
+        risk_per_lot = stop_distance * meta["multiplier"]
+        if risk_per_lot <= 0:
+            return 0
+
+        equity = self._current_equity(account, current_prices)
+        raw_volume = equity * abs(float(risk_pct)) / risk_per_lot
+        return self._normalize_volume(raw_volume)
+
+    @staticmethod
+    def _current_equity(account, current_prices: dict | None = None) -> float:
+        if current_prices:
+            return float(account.get_total_equity(current_prices))
+        return float(account.available + account.frozen_margin)
+
+    @staticmethod
+    def _valid_meta(symbol: str, price: float, account):
+        if price is None or pd.isna(price) or price <= 0:
+            return None
+
+        meta = account.fee_model._get_meta_data(symbol)
+        multiplier = float(meta["multiplier"])
+        margin_rate = float(meta["margin_rate"])
+        tick_size = float(meta.get("tick_size", 1.0))
+        margin_per_lot = price * multiplier * margin_rate
+        notional_per_lot = price * multiplier
+        if margin_per_lot <= 0 or notional_per_lot <= 0 or multiplier <= 0:
+            return None
+        return {
+            "multiplier": multiplier,
+            "margin_rate": margin_rate,
+            "tick_size": tick_size,
+            "margin_per_lot": margin_per_lot,
+            "notional_per_lot": notional_per_lot,
+        }
+
     def _normalize_volume(self, raw_volume: float) -> int:
         cfg = self.config
         lot = max(1, int(cfg.round_lot))
@@ -64,4 +153,3 @@ class PositionSizer:
             volume = min(volume, int(cfg.max_volume))
 
         return max(0, volume)
-

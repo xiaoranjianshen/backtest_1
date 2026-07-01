@@ -401,6 +401,21 @@ def _describe_slippage_setting(strategy, strategy_kwargs: dict) -> str:
     return f"策略市价单: {slippage_text}"
 
 
+def _describe_margin_rates(symbols) -> str:
+    seen_products = set()
+    margin_items = []
+    for sym in symbols:
+        p_code = pure_product_code(sym)
+        product_key = p_code.lower()
+        if product_key in seen_products:
+            continue
+        seen_products.add(product_key)
+        meta = FEE_DICT.get(p_code) or FEE_DICT.get(p_code.upper()) or FEE_DICT.get(p_code.lower()) or {}
+        rate = float(meta.get('margin_rate', 0.0) or 0.0)
+        margin_items.append(f"{p_code.upper()}:{rate * 100:.0f}%")
+    return ", ".join(margin_items)
+
+
 def run_backtest(
         strategy_class,
         symbols_input,
@@ -580,14 +595,7 @@ def run_backtest(
 
         # 构建回测参数描述表
         if strat_sym.upper() == 'MULTI' and isinstance(symbols_input, list):
-            margin_list = []
-            for sym in symbols_input:
-                p_code = pure_product_code(sym)
-                # 兼容配置字典中大小写不同的品种代码。
-                meta = FEE_DICT.get(p_code) or FEE_DICT.get(p_code.upper()) or FEE_DICT.get(p_code.lower()) or {}
-                rate = meta.get('margin_rate', 0)
-                margin_list.append(f"{p_code.upper()}:{rate * 100:.0f}%")
-            margin_str = ", ".join(margin_list)
+            margin_str = _describe_margin_rates(symbols_input)
             display_symbol = f"MULTI ({', '.join([s.upper() for s in symbols_input])})"
         else:
             p_code = pure_product_code(strat_sym)

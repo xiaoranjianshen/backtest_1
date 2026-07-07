@@ -6,6 +6,7 @@
 import os
 import sys
 import re
+import json
 from collections import defaultdict
 
 import numpy as np
@@ -987,6 +988,97 @@ class StrategyAnalyzer:
         if not self.trades or getattr(self, 'equity_df', None) is None or self.equity_df.empty:
             return "<div class=\'text-center text-gray-500 py-10\'>\u6301\u4ed3\u6216\u6743\u76ca\u6570\u636e\u4e0d\u8db3\uff0c\u65e0\u6cd5\u8ba1\u7b97\u6760\u6746\u7387</div>"
 
+        df_eq = self.equity_df.sort_values('datetime').copy()
+        if 'position_notional' in df_eq.columns:
+            df_eq['position_notional'] = pd.to_numeric(df_eq['position_notional'], errors='coerce').fillna(0.0)
+            df_eq['equity'] = pd.to_numeric(df_eq['equity'], errors='coerce').replace(0, np.nan)
+            has_directional_exposure = {
+                'long_position_notional',
+                'short_position_notional',
+            }.issubset(df_eq.columns)
+            if has_directional_exposure:
+                df_eq['long_position_notional'] = pd.to_numeric(
+                    df_eq['long_position_notional'], errors='coerce'
+                ).fillna(0.0)
+                df_eq['short_position_notional'] = pd.to_numeric(
+                    df_eq['short_position_notional'], errors='coerce'
+                ).fillna(0.0)
+                df_eq['position_notional'] = (
+                    df_eq['long_position_notional'].abs()
+                    + df_eq['short_position_notional'].abs()
+                )
+            df_eq['leverage'] = (df_eq['position_notional'].abs() / df_eq['equity']).fillna(0.0)
+
+            time_axis = _build_continuous_time_axis(df_eq['datetime'])
+            plot_x, time_labels = _map_to_continuous_time_axis(df_eq['datetime'], time_axis)
+
+            fig = go.Figure()
+            if has_directional_exposure:
+                fig.add_trace(go.Bar(
+                    x=plot_x,
+                    y=df_eq['long_position_notional'].abs(),
+                    name='多头持仓名义本金',
+                    marker_color='rgba(239, 68, 68, 0.60)',
+                    yaxis='y1',
+                    customdata=time_labels,
+                    hovertemplate="时间: %{customdata}<br>多头持仓名义本金: ￥%{y:,.0f}<extra></extra>",
+                ))
+                fig.add_trace(go.Bar(
+                    x=plot_x,
+                    y=-df_eq['short_position_notional'].abs(),
+                    name='空头持仓名义本金',
+                    marker_color='rgba(34, 197, 94, 0.60)',
+                    yaxis='y1',
+                    customdata=np.column_stack([time_labels, df_eq['short_position_notional'].abs()]),
+                    hovertemplate="时间: %{customdata[0]}<br>空头持仓名义本金: ￥%{customdata[1]:,.0f}<extra></extra>",
+                ))
+            else:
+                fig.add_trace(go.Bar(
+                    x=plot_x,
+                    y=df_eq['position_notional'].abs(),
+                    name='总持仓名义本金',
+                    marker_color='rgba(37, 99, 235, 0.55)',
+                    yaxis='y1',
+                    customdata=time_labels,
+                    hovertemplate="时间: %{customdata}<br>持仓名义本金: ￥%{y:,.0f}<extra></extra>",
+                ))
+            fig.add_trace(go.Scatter(
+                x=plot_x,
+                y=df_eq['leverage'],
+                mode='lines',
+                name='实时总杠杆率',
+                line=dict(color='#111827', width=2),
+                yaxis='y2',
+                customdata=time_labels,
+                hovertemplate="时间: %{customdata}<br>实时总杠杆率: %{y:.2f} 倍<extra></extra>",
+            ))
+            fig.update_layout(
+                height=380,
+                margin=REPORT_OVERVIEW_MARGIN,
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                hovermode="x unified",
+                barmode='relative',
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                yaxis=dict(
+                    title=dict(text="名义持仓本金 (￥)", font=dict(color="#1f2937")),
+                    tickfont=dict(color="#1f2937"),
+                    gridcolor='#f3f4f6',
+                ),
+                yaxis2=dict(
+                    title=dict(text="实时总杠杆率 (倍)", font=dict(color="#1f2937")),
+                    tickfont=dict(color="#1f2937"),
+                    anchor="x",
+                    overlaying="y",
+                    side="right",
+                    showgrid=False,
+                    tickformat=".2f",
+                    rangemode="tozero",
+                ),
+            )
+            fig.update_xaxes(**time_axis["layout"])
+            return fig.to_html(full_html=False, include_plotlyjs=False)
+
         # 1. 建立每日持仓时间�?
         from collections import defaultdict
         df_eq = self.equity_df.sort_values('datetime').copy()
@@ -1083,21 +1175,21 @@ class StrategyAnalyzer:
 
         # 多头总敞�?(上方条形�?
         fig.add_trace(go.Bar(
-            x=df_eq['datetime'], y=daily_long_val,
+            x=date_list, y=daily_long_val,
             name='\u591a\u5934\u603b\u655e\u53e3', marker_color='rgba(239, 68, 68, 0.6)', yaxis='y1',
             hovertemplate="\u65e5\u671f: %{x}<br>\u591a\u5934\u6301\u4ed3\u540d\u4e49\u4ef7\u503c: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
         # 空头总敞�?(下方条形�?
         fig.add_trace(go.Bar(
-            x=df_eq['datetime'], y=daily_short_val,
+            x=date_list, y=daily_short_val,
             name='\u7a7a\u5934\u603b\u655e\u53e3', marker_color='rgba(34, 197, 94, 0.6)', yaxis='y1',
             hovertemplate="\u65e5\u671f: %{x}<br>\u7a7a\u5934\u6301\u4ed3\u540d\u4e49\u4ef7\u503c: \u00a5%{y:,.0f}<extra></extra>"
         ))
 
         # 隔�?总杠杆率 (覆盖折线) - 绑定到副�?y2
         fig.add_trace(go.Scatter(
-            x=df_eq['datetime'], y=daily_leverage,
+            x=date_list, y=daily_leverage,
             mode='lines', name='\u9694\u591c\u603b\u6760\u6746\u7387', line=dict(color='#111827', width=2), yaxis='y2',
             hovertemplate="\u65e5\u671f: %{x}<br>\u5b9e\u9645\u9694\u591c\u6760\u6746\u7387: %{y:.2f} \u500d<extra></extra>"
         ))
@@ -1138,6 +1230,14 @@ class StrategyAnalyzer:
         # 盈利为红，亏损为�?(国内期货标准)
         colors = ['#dc2626' if val > 0 else '#16a34a' for val in pnls]
 
+        def format_pnl_label(value: float) -> str:
+            abs_value = abs(value)
+            if abs_value >= 100000000:
+                return f"{value / 100000000:.1f}\u4ebf"
+            if abs_value >= 10000:
+                return f"{value / 10000:.0f}\u4e07"
+            return f"{value:,.0f}"
+
         fig = go.Figure()
 
         # 显式指定 x �?y，确保输出为标准垂直柱状图�??
@@ -1145,7 +1245,7 @@ class StrategyAnalyzer:
             x=symbols,
             y=pnls,
             marker_color=colors,
-            text=[f"{val / 10000:.0f}?" for val in pnls],
+            text=[format_pnl_label(val) for val in pnls],
             textposition='auto',
             hovertemplate="\u5408\u7ea6: %{x}<br>\u7d2f\u8ba1\u51c0\u76c8\u4e8f: \u00a5%{y:,.0f}<extra></extra>"
         ))
@@ -2150,6 +2250,648 @@ class StrategyAnalyzer:
         }
 
     def get_signal_diagnostics_html_div(self):
+        return self._get_signal_diagnostics_interactive_html_div()
+
+    def _get_signal_diagnostics_interactive_html_div(self):
+        df = self._build_signal_diagnostics_df()
+        if df.empty:
+            return """
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-8 text-center text-gray-500">
+                \u672c\u6b21\u56de\u6d4b\u6ca1\u6709\u8bb0\u5f55\u5230\u53ef\u89c2\u6d4b\u4fe1\u53f7\u3002\u8bf7\u786e\u8ba4\u7b56\u7565\u7ee7\u627f GeneralSignalStrategy\uff0c\u5e76\u542f\u7528 record_signals=True\u3002
+            </div>
+            """
+
+        from config import NAME_TO_CODE, pure_product_code
+
+        df = df.copy()
+        df["product"] = df["symbol"].map(lambda value: pure_product_code(str(value)).upper())
+        df["sector"] = df["symbol"].map(_symbol_sector)
+
+        name_by_product = {}
+        for name, code in NAME_TO_CODE.items():
+            product = pure_product_code(str(code)).upper()
+            if product not in name_by_product or len(str(name)) < len(name_by_product[product]):
+                name_by_product[product] = str(name)
+
+        def product_label(product: str) -> str:
+            product = str(product).upper()
+            name = name_by_product.get(product)
+            return f"{name} {product}" if name else product
+
+        csv_name = "signal_events_full.csv"
+        df.to_csv(os.path.join(self.output_dir, csv_name), index=False, encoding="utf-8-sig")
+
+        horizons = self._signal_horizons()
+        primary_horizon = 6 if 6 in horizons else horizons[min(2, len(horizons) - 1)]
+        primary_col = f"fwd_{primary_horizon}_bar_return"
+        primary_raw_col = f"fwd_{primary_horizon}_bar_raw_return"
+
+        def clean_value(value):
+            if value is None:
+                return None
+            if isinstance(value, (np.integer,)):
+                return int(value)
+            if isinstance(value, (np.floating,)):
+                value = float(value)
+            if isinstance(value, float):
+                return value if np.isfinite(value) else None
+            if isinstance(value, pd.Timestamp):
+                return _format_time_label(value)
+            if pd.isna(value):
+                return None
+            return value
+
+        def clean_int(value, default: int = 0) -> int:
+            if value is None or pd.isna(value):
+                return default
+            return int(value)
+
+        def fmt_pct(value) -> str:
+            return self._fmt_pct_value(value)
+
+        def fmt_number(value, decimals: int = 2) -> str:
+            return self._fmt_number_value(value, decimals)
+
+        def build_cards(scope_df: pd.DataFrame, entry_df: pd.DataFrame, ic_df: pd.DataFrame) -> list[dict]:
+            exit_count = int((scope_df["signal"] == 0).sum())
+            long_count = int((scope_df["signal"] == 1).sum())
+            short_count = int((scope_df["signal"] == -1).sum())
+            valid_primary = entry_df[primary_col].dropna() if primary_col in entry_df.columns else pd.Series(dtype=float)
+            win_rate = float((valid_primary > 0).mean()) if not valid_primary.empty else np.nan
+            avg_forward = float(valid_primary.mean()) if not valid_primary.empty else np.nan
+            primary_ic_row = ic_df.loc[ic_df["horizon"] == f"T+{primary_horizon}"] if not ic_df.empty else pd.DataFrame()
+            primary_ic = float(primary_ic_row["ic"].iloc[0]) if not primary_ic_row.empty else np.nan
+            primary_rank_ic = float(primary_ic_row["rank_ic"].iloc[0]) if not primary_ic_row.empty else np.nan
+            balance_ratio = min(long_count, short_count) / max(long_count, short_count) if max(long_count, short_count) > 0 else np.nan
+            avg_mfe = float(entry_df["fwd_mfe_24_bar"].mean()) if "fwd_mfe_24_bar" in entry_df and not entry_df.empty else np.nan
+            avg_mae = float(entry_df["fwd_mae_24_bar"].mean()) if "fwd_mae_24_bar" in entry_df and not entry_df.empty else np.nan
+            mfe_mae_ratio = avg_mfe / abs(avg_mae) if pd.notna(avg_mfe) and pd.notna(avg_mae) and abs(avg_mae) > 1e-12 else np.nan
+            return [
+                {"title": "信号总数", "value": f"{len(scope_df):,}", "subtitle": "Recorded signal events"},
+                {"title": "开仓信号", "value": f"{len(entry_df):,}", "subtitle": f"Long {long_count:,} / Short {short_count:,}"},
+                {"title": "平仓信号", "value": f"{exit_count:,}", "subtitle": "Exit / Flat signals"},
+                {"title": f"T+{primary_horizon} Bar 胜率", "value": fmt_pct(win_rate), "subtitle": "Directional hit rate"},
+                {"title": f"T+{primary_horizon} Bar 均值", "value": fmt_pct(avg_forward), "subtitle": "Average directional return"},
+                {"title": f"T+{primary_horizon} IC", "value": self._fmt_ic_value(primary_ic), "subtitle": "Score vs raw forward return"},
+                {"title": f"T+{primary_horizon} Rank IC", "value": self._fmt_ic_value(primary_rank_ic), "subtitle": "Rank correlation"},
+                {"title": "多空均衡度", "value": fmt_pct(balance_ratio), "subtitle": "Min(long, short) / max(long, short)"},
+                {"title": "MFE/MAE", "value": fmt_number(mfe_mae_ratio, 2), "subtitle": "Avg favorable / adverse excursion"},
+            ]
+
+        def build_avg_rows(entry_df: pd.DataFrame) -> list[dict]:
+            rows = []
+            for horizon in horizons:
+                col = f"fwd_{horizon}_bar_return"
+                sample = entry_df[col].dropna() if col in entry_df.columns else pd.Series(dtype=float)
+                rows.append({
+                    "horizon": f"T+{horizon}",
+                    "avg_return_pct": float(sample.mean() * 100) if not sample.empty else None,
+                    "win_rate_pct": float((sample > 0).mean() * 100) if not sample.empty else None,
+                    "count": int(sample.count()),
+                })
+            return rows
+
+        def build_distribution(entry_df: pd.DataFrame) -> dict:
+            sample = entry_df[primary_col].dropna() * 100 if primary_col in entry_df.columns else pd.Series(dtype=float)
+            if sample.empty:
+                return {"x": [], "y": [], "width": []}
+            bins = min(40, max(8, int(np.sqrt(len(sample))) if len(sample) > 0 else 8))
+            counts, edges = np.histogram(sample.to_numpy(dtype=float), bins=bins)
+            centers = (edges[:-1] + edges[1:]) / 2
+            widths = edges[1:] - edges[:-1]
+            return {
+                "x": [clean_value(item) for item in centers],
+                "y": [int(item) for item in counts],
+                "width": [clean_value(item) for item in widths],
+            }
+
+        def build_group_rows(entry_df: pd.DataFrame, group_col: str) -> list[dict]:
+            if entry_df.empty or group_col not in entry_df.columns:
+                return []
+            grouped = entry_df.groupby(group_col).agg(
+                signal_count=("signal", "size"),
+                long_count=("signal", lambda s: int((s == 1).sum())),
+                short_count=("signal", lambda s: int((s == -1).sum())),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+                avg_mfe=("fwd_mfe_24_bar", "mean"),
+                avg_mae=("fwd_mae_24_bar", "mean"),
+            ).reset_index()
+            group_ic_df = self._build_group_ic_df(entry_df, group_col, primary_raw_col)
+            if not group_ic_df.empty:
+                grouped = grouped.merge(group_ic_df[[group_col, "ic", "rank_ic", "count"]], on=group_col, how="left")
+            else:
+                grouped["ic"] = np.nan
+                grouped["rank_ic"] = np.nan
+                grouped["count"] = 0
+
+            rows = []
+            for _, row in grouped.sort_values("signal_count", ascending=False).iterrows():
+                key = str(row[group_col])
+                display = product_label(key) if group_col == "product" else key
+                rows.append({
+                    "分组": display,
+                    "信号数": int(row["signal_count"]),
+                    "多头": int(row["long_count"]),
+                    "空头": int(row["short_count"]),
+                    "平均收益": fmt_pct(row["avg_return"]),
+                    "胜率": fmt_pct(row["win_rate"]),
+                    "平均MFE": fmt_pct(row["avg_mfe"]),
+                    "平均MAE": fmt_pct(row["avg_mae"]),
+                    "IC": self._fmt_ic_value(row.get("ic")),
+                    "Rank IC": self._fmt_ic_value(row.get("rank_ic")),
+                    "IC样本": clean_int(row.get("count", 0)),
+                })
+            return rows
+
+        def build_reason_rows(scope_df: pd.DataFrame) -> list[dict]:
+            reason_df = (
+                scope_df.fillna({"reason": ""})
+                .assign(reason=lambda item: item["reason"].replace("", "unspecified"))
+                .groupby(["reason", "signal"])
+                .size()
+                .reset_index(name="次数")
+                .sort_values("次数", ascending=False)
+                .head(50)
+            )
+            return [
+                {"原因": str(row["reason"]), "信号": clean_value(row["signal"]), "次数": int(row["次数"])}
+                for _, row in reason_df.iterrows()
+            ]
+
+        def build_month_rows(entry_df: pd.DataFrame) -> list[dict]:
+            if entry_df.empty:
+                return []
+            month_df = entry_df.copy()
+            month_df["月份"] = pd.to_datetime(month_df["datetime"]).dt.to_period("M").astype(str)
+            month_perf = month_df.groupby("月份").agg(
+                signal_count=("signal", "size"),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+            ).reset_index().tail(24)
+            month_ic = self._build_group_ic_df(month_df, "月份", primary_raw_col)
+            if not month_ic.empty:
+                month_perf = month_perf.merge(month_ic.rename(columns={"ic": "IC", "rank_ic": "Rank IC", "count": "IC样本"}), on="月份", how="left")
+            rows = []
+            for _, row in month_perf.iterrows():
+                rows.append({
+                    "月份": row["月份"],
+                    "信号数": int(row["signal_count"]),
+                    "平均收益": fmt_pct(row["avg_return"]),
+                    "胜率": fmt_pct(row["win_rate"]),
+                    "IC": self._fmt_ic_value(row.get("IC")),
+                    "Rank IC": self._fmt_ic_value(row.get("Rank IC")),
+                    "IC样本": clean_int(row.get("IC样本", 0)),
+                })
+            return rows
+
+        def build_direction_rows(entry_df: pd.DataFrame) -> list[dict]:
+            if entry_df.empty:
+                return []
+            direction_df = entry_df.copy()
+            direction_df["方向"] = direction_df["signal"].map({1: "多头信号 (Long)", -1: "空头信号 (Short)"})
+            stats = direction_df.groupby("方向").agg(
+                signal_count=("signal", "size"),
+                avg_return=(primary_col, "mean"),
+                win_rate=(primary_col, lambda s: (s.dropna() > 0).mean() if s.dropna().size else np.nan),
+                avg_mfe=("fwd_mfe_24_bar", "mean"),
+                avg_mae=("fwd_mae_24_bar", "mean"),
+            ).reset_index()
+            return [{
+                "方向": row["方向"],
+                "信号数": int(row["signal_count"]),
+                "平均收益": fmt_pct(row["avg_return"]),
+                "胜率": fmt_pct(row["win_rate"]),
+                "平均MFE": fmt_pct(row["avg_mfe"]),
+                "平均MAE": fmt_pct(row["avg_mae"]),
+            } for _, row in stats.iterrows()]
+
+        def build_event_rows(scope_df: pd.DataFrame) -> list[dict]:
+            columns = [
+                "datetime", "sector", "product", "symbol", "signal", "reason", "current_net", "price",
+                "signal_score", "size_scale", f"fwd_{horizons[0]}_bar_return",
+                primary_col, primary_raw_col, "fwd_mfe_24_bar", "fwd_mae_24_bar",
+            ]
+            preview = scope_df[[col for col in columns if col in scope_df.columns]].copy()
+            rows = []
+            for _, row in preview.iterrows():
+                item = {
+                    "_sector": row.get("sector"),
+                    "_product": row.get("product"),
+                    "时间": _format_time_label(row.get("datetime")),
+                    "板块": row.get("sector"),
+                    "品种": product_label(row.get("product")),
+                    "信号": clean_value(row.get("signal")),
+                    "原因": row.get("reason") if pd.notna(row.get("reason")) else "",
+                    "当时净持仓": clean_value(row.get("current_net")),
+                    "信号价": fmt_number(row.get("price"), 4),
+                    "信号分数": fmt_number(row.get("signal_score"), 4),
+                    "仓位系数": fmt_number(row.get("size_scale"), 4),
+                    f"T+{horizons[0]} Bar收益": fmt_pct(row.get(f"fwd_{horizons[0]}_bar_return")),
+                    f"T+{primary_horizon} Bar收益": fmt_pct(row.get(primary_col)),
+                    f"T+{primary_horizon} Bar原始收益": fmt_pct(row.get(primary_raw_col)),
+                    "24 Bar MFE": fmt_pct(row.get("fwd_mfe_24_bar")),
+                    "24 Bar MAE": fmt_pct(row.get("fwd_mae_24_bar")),
+                }
+                rows.append(item)
+            return rows
+
+        def build_scope(scope_df: pd.DataFrame, label: str, group_col: str, group_title: str) -> dict:
+            scope_df = scope_df.sort_values(["datetime", "symbol"]).copy()
+            entry_df = scope_df[scope_df["signal"].isin([1, -1])].copy()
+            ic_df = self._build_signal_ic_df(entry_df, horizons)
+            return {
+                "label": label,
+                "cards": build_cards(scope_df, entry_df, ic_df),
+                "avgRows": build_avg_rows(entry_df),
+                "distribution": build_distribution(entry_df),
+                "icRows": [
+                    {
+                        "观察窗口": row["horizon"],
+                        "IC": clean_value(row["ic"]),
+                        "Rank IC": clean_value(row["rank_ic"]),
+                        "样本数": int(row["count"]),
+                    }
+                    for _, row in ic_df.iterrows()
+                ],
+                "groupTitle": group_title,
+                "groupRows": build_group_rows(entry_df, group_col),
+                "directionRows": build_direction_rows(entry_df),
+                "reasonRows": build_reason_rows(scope_df),
+                "monthRows": build_month_rows(entry_df),
+                "eventTotal": int(len(scope_df)),
+                "entryTotal": int(len(entry_df)),
+            }
+
+        sectors = [sector for sector in SECTOR_ORDER if sector in set(df["sector"])]
+        products = sorted(df["product"].dropna().unique().tolist(), key=_symbol_sort_key)
+        product_options = [{"value": product, "label": product_label(product), "sector": _symbol_sector(product)} for product in products]
+        sector_options = [{"value": sector, "label": sector} for sector in sectors]
+
+        scopes = {"all": build_scope(df, "全部品种", "sector", "板块统计 (By Sector)")}
+        for sector in sectors:
+            subset = df[df["sector"] == sector]
+            scopes[f"sector:{sector}"] = build_scope(subset, f"板块：{sector}", "product", "板块内品种统计 (Products in Sector)")
+        for product in products:
+            subset = df[df["product"] == product]
+            scopes[f"product:{product}"] = build_scope(subset, f"品种：{product_label(product)}", "symbol", "合约/信号统计 (Contracts / Signals)")
+
+        payload = {
+            "csvName": csv_name,
+            "primaryHorizon": primary_horizon,
+            "firstHorizon": horizons[0],
+            "sectors": sector_options,
+            "products": product_options,
+            "eventRows": build_event_rows(df),
+            "scopes": scopes,
+        }
+        payload_json = json.dumps(payload, ensure_ascii=False, default=clean_value).replace("</", "<\\/")
+
+        html = """
+        <div class="space-y-6" id="signal-diagnostics-root">
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <div class="flex flex-col xl:flex-row xl:items-end xl:justify-between gap-4">
+                    <div>
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">信号检测范围 (Signal Scope)</h2>
+                        <p class="text-xs text-gray-500 mt-2 pl-3">选择全部、板块或具体品种后，下面的概览、IC、收益分布、统计表和事件明细会同步切换。</p>
+                    </div>
+                    <div class="flex flex-wrap items-end gap-3">
+                        <div class="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                            <button type="button" class="signal-scope-mode px-4 py-2 text-sm font-medium bg-[#1e3a8a] text-white" data-mode="all">全部品种</button>
+                            <button type="button" class="signal-scope-mode px-4 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-200" data-mode="sector">按板块</button>
+                            <button type="button" class="signal-scope-mode px-4 py-2 text-sm font-medium bg-white text-gray-700 border-l border-gray-200" data-mode="product">按品种</button>
+                        </div>
+                        <label class="text-xs text-gray-500">
+                            板块
+                            <select id="signal-sector-select" class="block mt-1 min-w-[160px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"></select>
+                        </label>
+                        <label class="text-xs text-gray-500">
+                            品种
+                            <select id="signal-product-select" class="block mt-1 min-w-[220px] rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-700"></select>
+                        </label>
+                    </div>
+                </div>
+                <div id="signal-scope-label" class="mt-4 rounded-lg bg-cyan-50 px-4 py-3 text-sm font-medium text-cyan-900"></div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3 mb-4">信号检测概览 (Signal Inspection Overview)</h2>
+                <div id="signal-card-grid" class="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3"></div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3 mb-3">信号编码说明 (Signal Encoding)</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3 text-sm text-gray-700">
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = 1</b><br>开多或加多头。是否成交取决于调仓器、保证金、挂单和撮合。</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = -1</b><br>开空或加空头。原因字段记录策略为什么给出这个方向。</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = 0</b><br>平仓或减仓信号。半平和全平都会表现为 0。</div>
+                    <div class="border border-gray-100 rounded-lg p-3 bg-gray-50"><b>signal = None</b><br>观望或无动作信号，默认不展示，避免 hold / warming_up 淹没有效事件。</div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                <h2 class="text-lg font-bold text-gray-800 border-l-4 border-indigo-600 pl-3 mb-2">IC 检测 (Information Coefficient)</h2>
+                <p class="text-xs text-gray-500 mb-3 pl-3">IC 使用信号分数与未来原始收益计算 Pearson 相关；Rank IC 使用 Spearman 秩相关。它衡量信号强弱排序是否对应未来涨跌，不等同于最终交易收益。</p>
+                <div class="grid grid-cols-1 xl:grid-cols-3 gap-4">
+                    <div id="signal-ic-chart" class="xl:col-span-2 min-h-[330px]"></div>
+                    <div id="signal-ic-table" class="overflow-y-auto max-h-[330px]"></div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3 mb-2">开仓信号后方向收益 (Entry Signal Forward Return)</h2>
+                    <p class="text-xs text-gray-500 mb-2 pl-3">T+N 表示信号后第 N 根 Bar；红色为方向收益为正，绿色为方向收益为负。</p>
+                    <div id="signal-forward-chart" class="min-h-[330px]"></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-slate-600 pl-3 mb-2">开仓信号后收益分布 (Entry Signal Return Distribution)</h2>
+                    <p class="text-xs text-gray-500 mb-2 pl-3">仅统计 signal=1/-1 的开仓方向信号；平仓信号不参与未来收益分布。</p>
+                    <div id="signal-distribution-chart" class="min-h-[330px]"></div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100"><h2 id="signal-group-title" class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3"></h2></div>
+                    <div id="signal-group-table" class="overflow-y-auto max-h-[420px]"></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100"><h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">多空方向表现 (By Direction)</h2></div>
+                    <div id="signal-direction-table" class="overflow-y-auto max-h-[420px]"></div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100"><h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">月份稳定性 (Monthly Stability)</h2></div>
+                    <div id="signal-month-table" class="overflow-y-auto max-h-[420px]"></div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                    <div class="p-4 border-b border-gray-100"><h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">信号原因统计 (By Reason)</h2></div>
+                    <div id="signal-reason-table" class="overflow-y-auto max-h-[420px]"></div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
+                <div class="p-4 border-b border-gray-100 bg-cyan-50 flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <div>
+                        <h2 class="text-lg font-bold text-gray-800 border-l-4 border-cyan-600 pl-3">信号事件明细 (Signal Events)</h2>
+                        <p id="signal-event-note" class="text-xs text-gray-500 mt-2 pl-3"></p>
+                    </div>
+                    <a href="__CSV_NAME__" download class="bg-[#1e3a8a] hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium self-start md:self-auto">下载完整信号明细 CSV</a>
+                </div>
+                <div id="signal-event-table" class="overflow-y-auto max-h-[620px]"></div>
+            </div>
+        </div>
+        <script>
+        (function() {
+            const payload = __SIGNAL_PAYLOAD__;
+            const root = document.getElementById('signal-diagnostics-root');
+            if (!root || !payload || !payload.scopes) return;
+
+            const state = {
+                mode: 'all',
+                sector: (payload.sectors[0] || {}).value || '',
+                product: (payload.products[0] || {}).value || ''
+            };
+
+            function escapeHtml(value) {
+                if (value === null || value === undefined) return '-';
+                return String(value).replace(/[&<>"']/g, function(ch) {
+                    return ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'})[ch];
+                });
+            }
+
+            function setOptions(select, rows) {
+                select.innerHTML = rows.map(function(row) {
+                    return '<option value="' + escapeHtml(row.value) + '">' + escapeHtml(row.label) + '</option>';
+                }).join('');
+            }
+
+            function currentScopeKey() {
+                if (state.mode === 'sector') return 'sector:' + state.sector;
+                if (state.mode === 'product') return 'product:' + state.product;
+                return 'all';
+            }
+
+            function currentScope() {
+                return payload.scopes[currentScopeKey()] || payload.scopes.all;
+            }
+
+            function emptyBox(text) {
+                return '<div class="text-center text-gray-500 py-10">' + escapeHtml(text) + '</div>';
+            }
+
+            function tableHtml(rows) {
+                if (!rows || !rows.length) return emptyBox('当前范围暂无可展示数据');
+                const columns = Object.keys(rows[0]).filter(function(col) { return !col.startsWith('_'); });
+                const header = columns.map(function(col) {
+                    return '<th class="py-2 px-3 text-center whitespace-nowrap">' + escapeHtml(col) + '</th>';
+                }).join('');
+                const body = rows.map(function(row) {
+                    return '<tr>' + columns.map(function(col) {
+                        return '<td class="py-2 px-3 text-center border-b border-gray-50 whitespace-nowrap">' + escapeHtml(row[col]) + '</td>';
+                    }).join('') + '</tr>';
+                }).join('');
+                return '<table class="w-full text-xs text-center text-gray-700 bg-white"><thead class="bg-gray-100 text-gray-700 sticky top-0"><tr>' + header + '</tr></thead><tbody>' + body + '</tbody></table>';
+            }
+
+            function renderCards(scope) {
+                document.getElementById('signal-card-grid').innerHTML = (scope.cards || []).map(function(card) {
+                    return '<div class="border border-gray-100 rounded-lg p-4 bg-gray-50">'
+                        + '<div class="text-xs text-gray-500">' + escapeHtml(card.subtitle) + '</div>'
+                        + '<div class="text-sm font-semibold text-gray-700 mt-1">' + escapeHtml(card.title) + '</div>'
+                        + '<div class="text-2xl font-bold text-gray-900 mt-2">' + escapeHtml(card.value) + '</div>'
+                        + '</div>';
+                }).join('');
+            }
+
+            function signalTabIsVisible() {
+                const tab = root.closest('.tab-content');
+                return !tab || tab.classList.contains('active');
+            }
+
+            function safePlot(node, data, layout, config) {
+                if (!window.Plotly) {
+                    node.innerHTML = emptyBox('Plotly 未加载，无法绘制图表');
+                    return;
+                }
+                Plotly.react(node, data, layout, config || {displayModeBar: false, responsive: true})
+                    .then(function() {
+                        try { Plotly.Plots.resize(node); } catch (err) {}
+                    })
+                    .catch(function(err) {
+                        node.innerHTML = emptyBox('图表渲染失败：' + (err && err.message ? err.message : err));
+                    });
+            }
+
+            let lastRenderedScope = null;
+            let pendingChartRender = null;
+
+            function scheduleCharts(scope) {
+                lastRenderedScope = scope;
+                if (!signalTabIsVisible()) return;
+                if (pendingChartRender) cancelAnimationFrame(pendingChartRender);
+                pendingChartRender = requestAnimationFrame(function() {
+                    requestAnimationFrame(function() {
+                        renderIcChart(scope);
+                        renderForwardChart(scope);
+                        renderDistribution(scope);
+                    });
+                });
+            }
+
+            function filteredEventRows() {
+                const rows = payload.eventRows || [];
+                let filtered = rows;
+                if (state.mode === 'sector') {
+                    filtered = rows.filter(function(row) { return row._sector === state.sector; });
+                } else if (state.mode === 'product') {
+                    filtered = rows.filter(function(row) { return row._product === state.product; });
+                }
+                return filtered.slice(0, 500);
+            }
+
+            function renderForwardChart(scope) {
+                const node = document.getElementById('signal-forward-chart');
+                const rows = scope.avgRows || [];
+                if (!rows.length) {
+                    if (window.Plotly) { try { Plotly.purge(node); } catch (err) {} }
+                    node.innerHTML = emptyBox('暂无开仓信号样本');
+                    return;
+                }
+                safePlot(node, [{
+                    type: 'bar',
+                    x: rows.map(r => r.horizon),
+                    y: rows.map(r => r.avg_return_pct),
+                    marker: {color: rows.map(r => (r.avg_return_pct || 0) >= 0 ? '#dc2626' : '#16a34a')},
+                    text: rows.map(r => r.avg_return_pct === null || r.avg_return_pct === undefined ? '-' : r.avg_return_pct.toFixed(3) + '%'),
+                    textposition: 'outside',
+                    hovertemplate: '观察窗口: %{x}<br>方向收益均值: %{y:.3f}%<extra></extra>'
+                }], {
+                    height: 330,
+                    margin: {l: 60, r: 24, t: 20, b: 50},
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    yaxis: {title: '方向收益均值(%)', zeroline: true, zerolinecolor: '#9ca3af', gridcolor: '#f3f4f6'},
+                    xaxis: {title: '信号后观察窗口'},
+                    showlegend: false
+                }, {displayModeBar: false, responsive: true});
+            }
+
+            function renderDistribution(scope) {
+                const node = document.getElementById('signal-distribution-chart');
+                const dist = scope.distribution || {};
+                if (!dist.x || !dist.x.length) {
+                    if (window.Plotly) { try { Plotly.purge(node); } catch (err) {} }
+                    node.innerHTML = emptyBox('暂无足够方向收益样本');
+                    return;
+                }
+                safePlot(node, [{
+                    type: 'bar',
+                    x: dist.x,
+                    y: dist.y,
+                    width: dist.width,
+                    marker: {color: '#64748b'},
+                    opacity: 0.85,
+                    hovertemplate: '收益区间中心: %{x:.3f}%<br>信号次数: %{y}<extra></extra>'
+                }], {
+                    height: 330,
+                    margin: {l: 60, r: 24, t: 20, b: 50},
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    xaxis: {title: 'T+' + payload.primaryHorizon + ' Bar 方向收益(%)', zeroline: true, zerolinecolor: '#9ca3af'},
+                    yaxis: {title: '信号次数', gridcolor: '#f3f4f6'},
+                    showlegend: false
+                }, {displayModeBar: false, responsive: true});
+            }
+
+            function renderIcChart(scope) {
+                const node = document.getElementById('signal-ic-chart');
+                const rows = scope.icRows || [];
+                if (!rows.length) {
+                    if (window.Plotly) { try { Plotly.purge(node); } catch (err) {} }
+                    node.innerHTML = emptyBox('暂无足够 IC 样本');
+                    return;
+                }
+                safePlot(node, [
+                    {type: 'bar', x: rows.map(r => r['观察窗口']), y: rows.map(r => r.IC), name: 'IC', marker: {color: '#2563eb'}},
+                    {type: 'bar', x: rows.map(r => r['观察窗口']), y: rows.map(r => r['Rank IC']), name: 'Rank IC', marker: {color: '#7c3aed'}}
+                ], {
+                    height: 330,
+                    barmode: 'group',
+                    margin: {l: 60, r: 24, t: 24, b: 50},
+                    paper_bgcolor: 'rgba(0,0,0,0)',
+                    plot_bgcolor: 'rgba(0,0,0,0)',
+                    yaxis: {title: '相关系数', zeroline: true, zerolinecolor: '#9ca3af', gridcolor: '#f3f4f6'},
+                    xaxis: {title: '信号后观察窗口'},
+                    legend: {orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'right', x: 1}
+                }, {displayModeBar: false, responsive: true});
+            }
+
+            function renderScope() {
+                const scope = currentScope();
+                document.getElementById('signal-scope-label').textContent = '当前范围：' + scope.label + '；信号事件 ' + scope.eventTotal + ' 条，开仓信号 ' + scope.entryTotal + ' 条。';
+                renderCards(scope);
+                document.getElementById('signal-ic-table').innerHTML = tableHtml(scope.icRows || []);
+                document.getElementById('signal-group-title').textContent = scope.groupTitle || '分组统计';
+                document.getElementById('signal-group-table').innerHTML = tableHtml(scope.groupRows || []);
+                document.getElementById('signal-direction-table').innerHTML = tableHtml(scope.directionRows || []);
+                document.getElementById('signal-month-table').innerHTML = tableHtml(scope.monthRows || []);
+                document.getElementById('signal-reason-table').innerHTML = tableHtml(scope.reasonRows || []);
+                document.getElementById('signal-event-table').innerHTML = tableHtml(filteredEventRows());
+                document.getElementById('signal-event-note').textContent = '页面展示当前范围前 500 条；完整数据下载 CSV 后可在本地筛选。收益为信号方向收益，平仓信号不计算未来方向收益。';
+                scheduleCharts(scope);
+            }
+
+            function updateModeButtons() {
+                root.querySelectorAll('.signal-scope-mode').forEach(function(btn) {
+                    const active = btn.dataset.mode === state.mode;
+                    btn.className = 'signal-scope-mode px-4 py-2 text-sm font-medium ' + (active ? 'bg-[#1e3a8a] text-white' : 'bg-white text-gray-700 border-l border-gray-200');
+                });
+                document.getElementById('signal-sector-select').disabled = state.mode !== 'sector';
+                document.getElementById('signal-product-select').disabled = state.mode !== 'product';
+            }
+
+            const sectorSelect = document.getElementById('signal-sector-select');
+            const productSelect = document.getElementById('signal-product-select');
+            setOptions(sectorSelect, payload.sectors || []);
+            setOptions(productSelect, payload.products || []);
+            sectorSelect.value = state.sector;
+            productSelect.value = state.product;
+
+            root.querySelectorAll('.signal-scope-mode').forEach(function(btn) {
+                btn.addEventListener('click', function() {
+                    state.mode = btn.dataset.mode || 'all';
+                    updateModeButtons();
+                    renderScope();
+                });
+            });
+            sectorSelect.addEventListener('change', function() {
+                state.sector = this.value;
+                state.mode = 'sector';
+                updateModeButtons();
+                renderScope();
+            });
+            productSelect.addEventListener('change', function() {
+                state.product = this.value;
+                state.mode = 'product';
+                updateModeButtons();
+                renderScope();
+            });
+
+            updateModeButtons();
+            renderScope();
+            window.addEventListener('resize', function() {
+                if (lastRenderedScope) scheduleCharts(lastRenderedScope);
+            });
+        })();
+        </script>
+        """
+        return html.replace("__SIGNAL_PAYLOAD__", payload_json).replace("__CSV_NAME__", csv_name)
+
+    def _get_signal_diagnostics_static_html_div(self):
         df = self._build_signal_diagnostics_df()
         if df.empty:
             return """

@@ -210,7 +210,160 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
         <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
         <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
         <style>
+            /* Local fallback styles. The report should remain readable even if
+               Tailwind's CDN script is blocked or slow on large inline reports. */
             body {{ background-color: #f3f4f6; }}
+            .min-h-screen {{ min-height: 100vh; }}
+            .w-full {{ width: 100%; }}
+            .max-w-screen-2xl {{ max-width: 1536px; }}
+            .mx-auto {{ margin-left: auto; margin-right: auto; }}
+            .flex {{ display: flex; }}
+            .grid {{ display: grid; }}
+            .hidden {{ display: none; }}
+            .block {{ display: block; }}
+            .items-end {{ align-items: flex-end; }}
+            .items-center {{ align-items: center; }}
+            .justify-between {{ justify-content: space-between; }}
+            .justify-center {{ justify-content: center; }}
+            .flex-col {{ flex-direction: column; }}
+            .overflow-hidden {{ overflow: hidden; }}
+            .overflow-x-auto {{ overflow-x: auto; }}
+            .overflow-y-auto {{ overflow-y: auto; }}
+            .relative {{ position: relative; }}
+            .sticky {{ position: sticky; }}
+            .top-0 {{ top: 0; }}
+            .p-3 {{ padding: 0.75rem; }}
+            .p-4 {{ padding: 1rem; }}
+            .p-6 {{ padding: 1.5rem; }}
+            .px-5 {{ padding-left: 1.25rem; padding-right: 1.25rem; }}
+            .px-6 {{ padding-left: 1.5rem; padding-right: 1.5rem; }}
+            .px-8 {{ padding-left: 2rem; padding-right: 2rem; }}
+            .py-2 {{ padding-top: 0.5rem; padding-bottom: 0.5rem; }}
+            .py-3 {{ padding-top: 0.75rem; padding-bottom: 0.75rem; }}
+            .pt-5 {{ padding-top: 1.25rem; }}
+            .pb-3 {{ padding-bottom: 0.75rem; }}
+            .pb-4 {{ padding-bottom: 1rem; }}
+            .pl-3 {{ padding-left: 0.75rem; }}
+            .mt-2 {{ margin-top: 0.5rem; }}
+            .mt-3 {{ margin-top: 0.75rem; }}
+            .mt-4 {{ margin-top: 1rem; }}
+            .mb-2 {{ margin-bottom: 0.5rem; }}
+            .mb-4 {{ margin-bottom: 1rem; }}
+            .gap-3 {{ gap: 0.75rem; }}
+            .gap-6 {{ gap: 1.5rem; }}
+            .space-x-1 > * + * {{ margin-left: 0.25rem; }}
+            .space-x-2 > * + * {{ margin-left: 0.5rem; }}
+            .space-x-3 > * + * {{ margin-left: 0.75rem; }}
+            .space-y-4 > * + * {{ margin-top: 1rem; }}
+            .space-y-6 > * + * {{ margin-top: 1.5rem; }}
+            .bg-white {{ background-color: #ffffff; }}
+            .bg-gray-50 {{ background-color: #f9fafb; }}
+            .bg-gray-100 {{ background-color: #f3f4f6; }}
+            .bg-teal-50 {{ background-color: #f0fdfa; }}
+            .bg-blue-700 {{ background-color: #1d4ed8; }}
+            .bg-teal-600 {{ background-color: #0d9488; }}
+            .bg-teal-700 {{ background-color: #0f766e; }}
+            .bg-red-50 {{ background-color: #fef2f2; }}
+            [class*="bg-[#1e3a8a]"] {{ background-color: #1e3a8a; }}
+            [class*="bg-white/95"] {{ background-color: rgba(255, 255, 255, 0.95); }}
+            [class*="bg-white/20"] {{ background-color: rgba(255, 255, 255, 0.2); }}
+            [class*="bg-[#1e3a8a]/5"] {{ background-color: rgba(30, 58, 138, 0.05); }}
+            .text-white {{ color: #ffffff; }}
+            .text-blue-100 {{ color: #dbeafe; }}
+            .text-blue-200 {{ color: #bfdbfe; }}
+            .text-gray-400 {{ color: #9ca3af; }}
+            .text-gray-500 {{ color: #6b7280; }}
+            .text-gray-600 {{ color: #4b5563; }}
+            .text-gray-700 {{ color: #374151; }}
+            .text-gray-800 {{ color: #1f2937; }}
+            .text-red-500 {{ color: #ef4444; }}
+            .text-green-500 {{ color: #22c55e; }}
+            [class*="text-[#1e3a8a]"] {{ color: #1e3a8a; }}
+            .text-xs {{ font-size: 0.75rem; line-height: 1rem; }}
+            .text-sm {{ font-size: 0.875rem; line-height: 1.25rem; }}
+            .text-lg {{ font-size: 1.125rem; line-height: 1.75rem; }}
+            .text-3xl {{ font-size: 1.875rem; line-height: 2.25rem; }}
+            .font-medium {{ font-weight: 500; }}
+            .font-bold {{ font-weight: 700; }}
+            .tracking-wider {{ letter-spacing: 0.05em; }}
+            .text-center {{ text-align: center; }}
+            .whitespace-nowrap {{ white-space: nowrap; }}
+            .rounded-lg {{ border-radius: 0.5rem; }}
+            .rounded-xl {{ border-radius: 0.75rem; }}
+            .rounded-full {{ border-radius: 9999px; }}
+            .rounded-t-lg {{ border-top-left-radius: 0.5rem; border-top-right-radius: 0.5rem; }}
+            .border {{ border-width: 1px; border-style: solid; }}
+            .border-b {{ border-bottom-width: 1px; border-bottom-style: solid; }}
+            .border-l-4 {{ border-left-width: 4px; border-left-style: solid; }}
+            .border-gray-50 {{ border-color: #f9fafb; }}
+            .border-gray-100 {{ border-color: #f3f4f6; }}
+            .border-gray-200 {{ border-color: #e5e7eb; }}
+            .border-blue-600 {{ border-color: #2563eb; }}
+            .border-indigo-600 {{ border-color: #4f46e5; }}
+            .border-red-500 {{ border-color: #ef4444; }}
+            .border-red-600 {{ border-color: #dc2626; }}
+            .border-emerald-500 {{ border-color: #10b981; }}
+            .border-purple-600 {{ border-color: #9333ea; }}
+            .border-orange-500 {{ border-color: #f97316; }}
+            .border-teal-500 {{ border-color: #14b8a6; }}
+            .border-slate-900 {{ border-color: #0f172a; }}
+            [class*="border-[#1e3a8a]"] {{ border-color: #1e3a8a; }}
+            .shadow-sm {{ box-shadow: 0 1px 2px rgba(0,0,0,0.05); }}
+            .shadow-md {{ box-shadow: 0 4px 6px -1px rgba(0,0,0,0.10), 0 2px 4px -2px rgba(0,0,0,0.10); }}
+            .shadow-lg {{ box-shadow: 0 10px 15px -3px rgba(0,0,0,0.10), 0 4px 6px -4px rgba(0,0,0,0.10); }}
+            .transition-all {{ transition: all 0.15s ease; }}
+            .transition-colors {{ transition: background-color 0.15s ease, color 0.15s ease; }}
+            .focus\:outline-none:focus {{ outline: 2px solid transparent; outline-offset: 2px; }}
+            .max-h-\[500px\] {{ max-height: 500px; }}
+            .bg-white.rounded-xl,
+            .bg-white.rounded-lg {{
+                background: #ffffff;
+                border-radius: 0.75rem;
+                border: 1px solid #f3f4f6;
+                box-shadow: 0 4px 6px -1px rgba(0,0,0,0.08), 0 2px 4px -2px rgba(0,0,0,0.08);
+            }}
+            .tab-btn,
+            .replay-btn,
+            #btn-download-pdf,
+            a[download] {{
+                appearance: none;
+                border: 0;
+                cursor: pointer;
+                font-family: inherit;
+                text-decoration: none;
+            }}
+            .tab-btn {{
+                background: transparent;
+                color: #dbeafe;
+                border-radius: 0.5rem 0.5rem 0 0;
+            }}
+            .tab-btn.bg-white {{
+                background: #ffffff;
+                color: #1e3a8a;
+            }}
+            .replay-btn {{
+                background: #f3f4f6;
+                color: #4b5563;
+            }}
+            .replay-btn.text-white {{
+                background: #1e3a8a;
+                color: #ffffff;
+            }}
+            table {{
+                width: 100%;
+                border-collapse: collapse;
+            }}
+            th, td {{
+                padding: 0.5rem 1rem;
+                border-bottom: 1px solid #f3f4f6;
+            }}
+            thead {{
+                background: #f3f4f6;
+                color: #374151;
+            }}
+            @media (min-width: 1280px) {{
+                .xl\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            }}
             .tab-content {{ display: none; }}
             .tab-content.active {{ display: block; animation: fadeIn 0.3s ease-in-out; }}
             .config-frame {{ width: 100%; height: calc(100vh - 190px); min-height: 720px; border: 0; background: #ffffff; }}
@@ -394,6 +547,78 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 state.originalGraph.style.display = state.originalDisplay;
             }}
 
+            async function preparePlotlyChartsForPdf(target) {{
+                if (!target || !window.Plotly) return [];
+                const states = [];
+                const redrawTasks = [];
+
+                target.querySelectorAll('.plotly-graph-div').forEach(graph => {{
+                    if (!graph.data || !graph.data.length) return;
+                    const hasExposureTrace = graph.data.some(trace => {{
+                        const name = String((trace && trace.name) || '');
+                        return name.includes('持仓名义本金') || name.includes('总持仓名义本金') || name.includes('总杠杆率');
+                    }});
+                    if (!hasExposureTrace) return;
+
+                    states.push({{
+                        graph,
+                        traces: graph.data.map(trace => ({{
+                            marker: trace.marker ? cloneForPlotly(trace.marker) : null,
+                            line: trace.line ? cloneForPlotly(trace.line) : null,
+                            opacity: trace.opacity
+                        }}))
+                    }});
+
+                    graph.data.forEach(trace => {{
+                        const name = String((trace && trace.name) || '');
+                        if (name.includes('多头持仓名义本金')) {{
+                            trace.marker = Object.assign({{}}, trace.marker || {{}}, {{ color: 'rgba(239, 68, 68, 0.80)' }});
+                            trace.opacity = 1;
+                        }} else if (name.includes('空头持仓名义本金')) {{
+                            trace.marker = Object.assign({{}}, trace.marker || {{}}, {{ color: 'rgba(34, 197, 94, 0.80)' }});
+                            trace.opacity = 1;
+                        }} else if (name.includes('总持仓名义本金')) {{
+                            trace.marker = Object.assign({{}}, trace.marker || {{}}, {{ color: 'rgba(37, 99, 235, 0.75)' }});
+                            trace.opacity = 1;
+                        }} else if (name.includes('总杠杆率')) {{
+                            trace.line = Object.assign({{}}, trace.line || {{}}, {{ color: '#111827', width: 2.4 }});
+                        }}
+                    }});
+                    redrawTasks.push(Promise.resolve(Plotly.redraw(graph)).catch(() => null));
+                }});
+
+                await Promise.all(redrawTasks);
+                return states;
+            }}
+
+            async function restorePlotlyChartsForPdf(states) {{
+                if (!states || !states.length || !window.Plotly) return;
+                const redrawTasks = [];
+                states.forEach(state => {{
+                    state.traces.forEach((snapshot, index) => {{
+                        const trace = state.graph.data[index];
+                        if (!trace) return;
+                        if (snapshot.marker === null) {{
+                            delete trace.marker;
+                        }} else {{
+                            trace.marker = cloneForPlotly(snapshot.marker);
+                        }}
+                        if (snapshot.line === null) {{
+                            delete trace.line;
+                        }} else {{
+                            trace.line = cloneForPlotly(snapshot.line);
+                        }}
+                        if (snapshot.opacity === undefined) {{
+                            delete trace.opacity;
+                        }} else {{
+                            trace.opacity = snapshot.opacity;
+                        }}
+                    }});
+                    redrawTasks.push(Promise.resolve(Plotly.redraw(state.graph)).catch(() => null));
+                }});
+                await Promise.all(redrawTasks);
+            }}
+
             function getExportBreakpoints(target, canvas) {{
                 const targetHeight = Math.max(1, target.scrollHeight || target.offsetHeight);
                 const scaleY = canvas.height / targetHeight;
@@ -485,6 +710,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
 
                 const replayStates = [];
                 let periodReturnsState = null;
+                let plotlyPdfStates = [];
                 if (section.showAllReplay) {{
                     document.querySelectorAll('.replay-content').forEach(el => {{
                         replayStates.push({{
@@ -503,6 +729,8 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 }}
 
                 try {{
+                    plotlyPdfStates = await preparePlotlyChartsForPdf(target);
+                    if (plotlyPdfStates.length) await waitForRender(250);
                     const canvas = await html2canvas(target, {{
                         backgroundColor: '#f3f4f6',
                         scale: 2,
@@ -516,6 +744,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                         breakpoints: getExportBreakpoints(target, canvas)
                     }};
                 }} finally {{
+                    await restorePlotlyChartsForPdf(plotlyPdfStates);
                     restorePeriodReturnsForPdf(periodReturnsState);
                     replayStates.forEach(state => {{
                         state.el.style.display = state.display;

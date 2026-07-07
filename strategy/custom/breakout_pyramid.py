@@ -15,7 +15,8 @@ class BreakoutPyramidStrategy(GeneralSignalStrategy):
         self,
         broker,
         account,
-        symbol,
+        symbol="multi",
+        target_symbols=None,
         lookback: int = 20,
         add_scale: float = 1.0,
         max_position_scale: float = 4.0,
@@ -26,16 +27,15 @@ class BreakoutPyramidStrategy(GeneralSignalStrategy):
             broker=broker,
             account=account,
             symbol=symbol,
-            target_symbols=[symbol],
+            target_symbols=target_symbols,
             **kwargs,
         )
 
-        self.symbol = self.symbols[0]
         self.lookback = int(lookback)
         self.add_scale = float(add_scale)
         self.max_position_scale = float(max_position_scale)
         self.allow_short = bool(allow_short)
-        self.history = []
+        self.history = {sym: [] for sym in self.symbols}
 
         if self.lookback <= 1:
             raise ValueError("lookback must be greater than 1")
@@ -47,59 +47,63 @@ class BreakoutPyramidStrategy(GeneralSignalStrategy):
     def on_init(self):
         super().on_init()
         print(
-            f"[Strategy BreakoutPyramid] symbol={self.symbol} | lookback={self.lookback} | "
+            f"[Strategy BreakoutPyramid] symbols={len(self.symbols)} | lookback={self.lookback} | "
             f"add_scale={self.add_scale:g} | max_position_scale={self.max_position_scale:g} | "
             f"allow_short={self.allow_short}"
         )
 
     def generate_signals(self, bar_data: dict) -> dict:
-        if self.symbol not in bar_data:
-            return {}
+        signals = {}
 
-        bar = bar_data[self.symbol]
-        close_price = bar.get("close")
-        high_price = bar.get("high")
-        low_price = bar.get("low")
+        for sym in self.symbols:
+            bar = bar_data.get(sym)
+            if not bar:
+                continue
 
-        if pd.isna(close_price) or pd.isna(high_price) or pd.isna(low_price):
-            return {}
+            close_price = bar.get("close")
+            high_price = bar.get("high")
+            low_price = bar.get("low")
 
-        if len(self.history) < self.lookback:
-            self.history.append({"close": close_price, "high": high_price, "low": low_price})
-            return {
-                self.symbol: {
+            if pd.isna(close_price) or pd.isna(high_price) or pd.isna(low_price):
+                continue
+
+            history = self.history.setdefault(sym, [])
+            if len(history) < self.lookback:
+                history.append({"close": close_price, "high": high_price, "low": low_price})
+                signals[sym] = {
                     "signal": None,
                     "reason": "warming_up",
-                    "metrics": {"close": close_price, "history_len": len(self.history)},
+                    "metrics": {"close": close_price, "history_len": len(history)},
                 }
-            }
+                continue
 
-        recent = self.history[-self.lookback:]
-        prev_high = max(item["high"] for item in recent)
-        prev_low = min(item["low"] for item in recent)
+            recent = history[-self.lookback:]
+            prev_high = max(item["high"] for item in recent)
+            prev_low = min(item["low"] for item in recent)
 
-        signal = None
-        position_mode = None
-        reason = "hold"
+            signal = None
+            position_mode = None
+            reason = "hold"
 
-        if close_price > prev_high:
-            signal = 1
-            position_mode = "delta"
-            reason = "upside_breakout"
-        elif close_price < prev_low:
-            if self.allow_short:
-                signal = -1
+            if close_price > prev_high:
+                signal = 1
                 position_mode = "delta"
-                reason = "downside_breakout"
-            else:
-                signal = 0
-                position_mode = "flat"
-                reason = "downside_breakout_exit"
+                reason = "upside_breakout"
+            elif close_price < prev_low:
+                if self.allow_short:
+                    signal = -1
+                    position_mode = "delta"
+                    reason = "downside_breakout"
+                else:
+                    signal = 0
+                    position_mode = "flat"
+                    reason = "downside_breakout_exit"
 
-        self.history.append({"close": close_price, "high": high_price, "low": low_price})
+            history.append({"close": close_price, "high": high_price, "low": low_price})
+            if len(history) > self.lookback:
+                history.pop(0)
 
-        return {
-            self.symbol: {
+            signals[sym] = {
                 "signal": signal,
                 "position_mode": position_mode,
                 "size_scale": self.add_scale,
@@ -112,4 +116,5 @@ class BreakoutPyramidStrategy(GeneralSignalStrategy):
                     "lookback": self.lookback,
                 },
             }
-        }
+
+        return signals

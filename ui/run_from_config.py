@@ -18,8 +18,6 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from config import pure_product_code
-
 
 UI_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = UI_DIR.parent
@@ -33,6 +31,8 @@ if loaded_config is not None:
     loaded_path = Path(getattr(loaded_config, "__file__", "") or "")
     if loaded_path.name == "config.py" and loaded_path.parent == UI_DIR:
         del sys.modules["config"]
+
+from config import pure_product_code
 
 
 @dataclass(frozen=True)
@@ -178,12 +178,13 @@ def _build_general_multi_ma(config: dict[str, Any], spec: StrategySpec) -> dict[
 
 
 def _build_breakout_pyramid(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
-    symbol = _parse_symbols(config.get("symbols", config.get("symbol")))[0]
+    symbols = _parse_symbols(config.get("symbols", config.get("symbol")))
     args = _base_args(config)
     args.update({
         "strategy_class": _import_class(spec.module, spec.class_name),
-        "symbols_input": symbol,
+        "symbols_input": symbols,
         "strategy_kwargs": {
+            "target_symbols": symbols,
             "lookback": int(config.get("lookback", 20)),
             "add_scale": float(config.get("add_scale", 1.0)),
             "max_position_scale": float(config.get("max_position_scale", 4.0)),
@@ -841,7 +842,7 @@ def run_from_config(config_path: str):
     from backtest_engine import run_backtest
     from frontend_index import build_html_dashboard
 
-    with open(config_path, "r", encoding="utf-8") as f:
+    with open(config_path, "r", encoding="utf-8-sig") as f:
         config = json.load(f)
 
     args = build_run_arguments(config)

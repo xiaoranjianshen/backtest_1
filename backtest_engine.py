@@ -159,18 +159,43 @@ def _extract_close_prices(bar_data: dict) -> dict:
     return prices
 
 
-def _calc_position_notional(account: Account, current_prices: dict) -> float:
-    """Calculate absolute notional value of all open positions at current close prices."""
-    total_notional = 0.0
+def _calc_position_exposure(account: Account, current_prices: dict) -> dict:
+    """Calculate long/short/total notional exposure of open positions."""
+    long_notional = 0.0
+    short_notional = 0.0
     for pos_key, pos in account.positions.items():
-        symbol, _ = pos_key.rsplit('_', 1)
+        symbol, direction = pos_key.rsplit('_', 1)
         price = current_prices.get(symbol)
         volume = account._position_volume(pos)
         if price is None or pd.isna(price) or volume <= 0:
             continue
         meta = account.fee_model._get_meta_data(symbol)
-        total_notional += abs(float(price) * volume * meta['multiplier'])
-    return total_notional
+        notional = abs(float(price) * volume * meta['multiplier'])
+        if direction == 'LONG':
+            long_notional += notional
+        elif direction == 'SHORT':
+            short_notional += notional
+        else:
+            long_notional += notional
+    return {
+        'position_notional': long_notional + short_notional,
+        'long_position_notional': long_notional,
+        'short_position_notional': short_notional,
+    }
+
+
+def _calc_position_notional(account: Account, current_prices: dict) -> float:
+    """Backward-compatible total absolute notional value of all open positions."""
+    return _calc_position_exposure(account, current_prices)['position_notional']
+
+
+def _build_equity_record(current_time, account: Account, close_prices: dict) -> dict:
+    exposure = _calc_position_exposure(account, close_prices)
+    return {
+        'datetime': current_time,
+        'equity': account.get_total_equity(close_prices),
+        **exposure,
+    }
 
 
 def _resolve_symbols(symbols_input, data_type):
@@ -519,11 +544,7 @@ def run_backtest(
             close_prices = _extract_close_prices(bar_data)
             if close_prices:
                 last_close_prices = close_prices
-                equity_records.append({
-                    'datetime': current_time,
-                    'equity': account.get_total_equity(close_prices),
-                    'position_notional': _calc_position_notional(account, close_prices),
-                })
+                equity_records.append(_build_equity_record(current_time, account, close_prices))
     else:
         for current_time, row in df.iterrows():
             current_date = current_time.date()
@@ -551,11 +572,7 @@ def run_backtest(
             close_prices = _extract_close_prices(bar_data)
             if close_prices:
                 last_close_prices = close_prices  # 更新昨收价
-                equity_records.append({
-                    'datetime': current_time,
-                    'equity': account.get_total_equity(close_prices),
-                    'position_notional': _calc_position_notional(account, close_prices),
-                })
+                equity_records.append(_build_equity_record(current_time, account, close_prices))
 
     print("\n" + "=" * 60)
     print(f"[Engine] 时间轴模拟结束 (模拟至 {actual_end})。")

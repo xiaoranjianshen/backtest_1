@@ -14,7 +14,7 @@ from frontend_index import build_html_dashboard
 from strategy.custom.zscore_reversal import ZScoreReversalStrategy
 
 
-TARGET_SYMBOLS = ["rb", "hc", "i", "ta", "ma", "p", "y", "sr"]
+TARGET_SYMBOLS = ["rb", "hc", "i", "ta", "ma", "p", "y", "sr","au","ag","im","ic"]
 
 STRATEGY_KWARGS = {
     "target_symbols": TARGET_SYMBOLS,

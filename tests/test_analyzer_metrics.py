@@ -131,6 +131,114 @@ class AnalyzerMetricsTest(unittest.TestCase):
         self.assertAlmostEqual(float(ic_df.loc[0, "ic"]), 1.0)
         self.assertAlmostEqual(float(ic_df.loc[0, "rank_ic"]), 1.0)
 
+    def test_signal_diagnostics_html_exposes_scope_controls_and_event_download(self):
+        dates = pd.date_range("2026-01-01", periods=8, freq="D")
+        price_df = pd.DataFrame(
+            {
+                ("close", "rb"): [100, 102, 104, 106, 108, 110, 112, 114],
+                ("close", "au"): [500, 498, 496, 494, 492, 490, 488, 486],
+            },
+            index=dates,
+        )
+        price_df.columns = pd.MultiIndex.from_tuples(price_df.columns)
+        signal_records = [
+            {"datetime": dates[0], "symbol": "rb", "signal": 1, "reason": "rb_entry", "current_net": 0, "price": 100, "signal_score": 0.8},
+            {"datetime": dates[1], "symbol": "rb", "signal": 0, "reason": "rb_exit", "current_net": 1, "price": 102, "signal_score": 0.0},
+            {"datetime": dates[0], "symbol": "au", "signal": -1, "reason": "au_short", "current_net": 0, "price": 500, "signal_score": -0.7},
+        ]
+        analyzer = StrategyAnalyzer(
+            trades=[],
+            price_df=price_df,
+            initial_capital=1_000_000.0,
+            symbol="MULTI",
+            freq="1d",
+            strategy_name="SignalHtmlTestStrategy",
+            equity_df=pd.DataFrame([{"datetime": dates[0], "equity": 1_000_000.0}]),
+            signal_records=signal_records,
+        )
+
+        html = analyzer.get_signal_diagnostics_html_div()
+
+        self.assertIn("signal-sector-select", html)
+        self.assertIn("signal-product-select", html)
+        self.assertIn("信号检测范围 (Signal Scope)", html)
+        self.assertIn("下载完整信号明细 CSV", html)
+        self.assertIn("板块统计 (By Sector)", html)
+
+    def test_leverage_chart_uses_recorded_position_notional(self):
+        equity_df = pd.DataFrame([
+            {"datetime": "2026-05-07 09:00:00", "equity": 1_000_000.0, "position_notional": 0.0},
+            {"datetime": "2026-05-07 09:00:01", "equity": 1_000_000.0, "position_notional": 200_000.0},
+        ])
+        trade = Trade(
+            symbol="rb",
+            direction=Direction.LONG,
+            offset=Offset.OPEN,
+            volume=1,
+            price=3500.0,
+            trade_time=datetime(2026, 5, 7, 9, 0, 0),
+            commission=3.5,
+            slippage_cost=0.0,
+            order_id="test-order",
+        )
+        analyzer = StrategyAnalyzer(
+            trades=[trade],
+            price_df=pd.DataFrame(index=pd.to_datetime(equity_df["datetime"])),
+            initial_capital=1_000_000.0,
+            symbol="MULTI",
+            freq="tick",
+            strategy_name="LeverageHtmlTestStrategy",
+            equity_df=equity_df,
+        )
+
+        html = analyzer.get_leverage_and_position_html_div()
+
+        self.assertIn("总持仓名义本金", html)
+        self.assertIn("实时总杠杆率", html)
+
+    def test_leverage_chart_uses_directional_position_notional_when_available(self):
+        equity_df = pd.DataFrame([
+            {
+                "datetime": "2026-05-07 09:00:00",
+                "equity": 1_000_000.0,
+                "position_notional": 0.0,
+                "long_position_notional": 0.0,
+                "short_position_notional": 0.0,
+            },
+            {
+                "datetime": "2026-05-07 09:00:01",
+                "equity": 1_000_000.0,
+                "position_notional": 500_000.0,
+                "long_position_notional": 200_000.0,
+                "short_position_notional": 300_000.0,
+            },
+        ])
+        trade = Trade(
+            symbol="rb",
+            direction=Direction.SHORT,
+            offset=Offset.OPEN,
+            volume=1,
+            price=3500.0,
+            trade_time=datetime(2026, 5, 7, 9, 0, 0),
+            commission=3.5,
+            slippage_cost=0.0,
+            order_id="test-order",
+        )
+        analyzer = StrategyAnalyzer(
+            trades=[trade],
+            price_df=pd.DataFrame(index=pd.to_datetime(equity_df["datetime"])),
+            initial_capital=1_000_000.0,
+            symbol="MULTI",
+            freq="tick",
+            strategy_name="DirectionalLeverageHtmlTestStrategy",
+            equity_df=equity_df,
+        )
+
+        html = analyzer.get_leverage_and_position_html_div()
+
+        self.assertIn("多头持仓名义本金", html)
+        self.assertIn("空头持仓名义本金", html)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -77,6 +77,23 @@ class UiConfigIntegrationTest(unittest.TestCase):
         self.assertEqual(args["strategy_kwargs"]["entry_z"], 2.1)
         self.assertEqual(args["strategy_kwargs"]["sizing"]["mode"], "available_pct")
 
+    def test_breakout_pyramid_preserves_multi_symbol_selection(self):
+        args = build_run_arguments({
+            "strategy": "breakout_pyramid",
+            "symbols": "hc,i,rb",
+            "start_date": "2021-01-01",
+            "end_date": "2022-01-01",
+            "lookback": 20,
+            "add_scale": 1.0,
+            "max_position_scale": 4.0,
+        })
+
+        self.assertEqual(args["strategy_class"].__module__, "strategy.custom.breakout_pyramid")
+        self.assertEqual(args["strategy_class"].__name__, "BreakoutPyramidStrategy")
+        self.assertEqual(args["symbols_input"], ["hc", "i", "rb"])
+        self.assertEqual(args["strategy_kwargs"]["target_symbols"], ["hc", "i", "rb"])
+        self.assertEqual(args["strategy_kwargs"]["lookback"], 20)
+
     def test_opponent_order_type_requires_tick_frequency(self):
         with self.assertRaisesRegex(ValueError, "only supported for tick"):
             build_run_arguments({

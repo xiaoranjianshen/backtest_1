@@ -310,7 +310,7 @@ def _render_query_panel(client: ReadOnlyClickHouse, database: str, table: str, c
 
     row_col_1, row_col_2, row_col_3 = st.columns([1, 1, 1])
     preview_limit = int(row_col_1.number_input("预览行数", min_value=1, max_value=100000, value=1000, step=100, key="data_portal_preview_limit"))
-    download_limit = int(row_col_2.number_input("下载行数上限 (0=全部)", min_value=0, value=100000, step=10000, key="data_portal_download_limit"))
+    download_limit = int(row_col_2.number_input("下载行数上限 (0=全部)", min_value=0, value=0, step=10000, key="data_portal_download_limit_v2"))
     output_format = row_col_3.selectbox("下载格式", ["parquet", "csv"], key="data_portal_output_format")
 
     base_spec = QuerySpec(

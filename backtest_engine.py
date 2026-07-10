@@ -65,6 +65,15 @@ def extract_bar_data(row, columns_level_1):
             bar_data[raw_code]['is_fresh'] = bool(_row_value(row, 'is_fresh', full_sym, 1.0))
             if ('month_change', full_sym) in row:
                 bar_data[raw_code]['month_change'] = row[('month_change', full_sym)]
+            for field in (
+                'underlying_symbol',
+                'previous_underlying_symbol',
+                'roll_old_close',
+                'roll_new_open',
+            ):
+                value = _row_value(row, field, full_sym, pd.NA)
+                if value is not None and not pd.isna(value):
+                    bar_data[raw_code][field] = value
         elif ('last_price', full_sym) in row and not pd.isna(row[('last_price', full_sym)]):
             price = row[('last_price', full_sym)]
             bid = _row_value(row, 'bid_price_1', full_sym, price)
@@ -451,6 +460,7 @@ def run_backtest(
         initial_capital: float = 1000000.0,
         strategy_kwargs: dict = None,
         enable_main_rollover: bool = True,
+        analysis_start_date: str | None = None,
 ):
     """
     通用回测执行接口
@@ -610,6 +620,39 @@ def run_backtest(
             'rollover_commission': rollover_commission,
         }
 
+        analysis_price_df = df
+        analysis_equity_df = pd.DataFrame(equity_records)
+        analysis_trades = list(broker.trade_history)
+        analysis_signal_records = list(getattr(strategy, 'raw_signal_records', []))
+        analysis_rebalance_records = list(getattr(strategy, 'signal_records', []))
+        analysis_selection_records = list(getattr(strategy, 'selection_records', []))
+        effective_start_date = analysis_start_date or start_date
+
+        if analysis_start_date not in (None, ''):
+            analysis_start_ts = pd.Timestamp(analysis_start_date)
+            analysis_price_df = df.loc[df.index >= analysis_start_ts]
+            if not analysis_equity_df.empty and 'datetime' in analysis_equity_df.columns:
+                equity_times = pd.to_datetime(analysis_equity_df['datetime'], errors='coerce')
+                analysis_equity_df = analysis_equity_df.loc[equity_times >= analysis_start_ts].copy()
+            analysis_trades = [
+                trade for trade in analysis_trades
+                if pd.Timestamp(getattr(trade, 'trade_time', pd.NaT)) >= analysis_start_ts
+            ]
+
+            def _records_from_start(records):
+                filtered = []
+                for record in records:
+                    if not isinstance(record, dict):
+                        continue
+                    record_time = pd.to_datetime(record.get('datetime'), errors='coerce')
+                    if not pd.isna(record_time) and record_time >= analysis_start_ts:
+                        filtered.append(record)
+                return filtered
+
+            analysis_signal_records = _records_from_start(analysis_signal_records)
+            analysis_rebalance_records = _records_from_start(analysis_rebalance_records)
+            analysis_selection_records = _records_from_start(analysis_selection_records)
+
         # 构建回测参数描述表
         if strat_sym.upper() == 'MULTI' and isinstance(symbols_input, list):
             margin_str = _describe_margin_rates(symbols_input)
@@ -624,7 +667,7 @@ def run_backtest(
         # 报告参数只放用户需要核对的回测口径；手续费明细在绩效表中按品种展示。
         describe_params = {
             '数据周期': freq,
-            '回测区间': f"{str(start_date).split()[0]} 至 {str(end_date).split()[0]}",
+            '回测区间': f"{str(effective_start_date).split()[0]} 至 {str(end_date).split()[0]}",
             '初始资金': f"￥{initial_capital:,.2f}",
             '回测品种': display_symbol,
             '滑点设置': _describe_slippage_setting(strategy, strategy_kwargs),
@@ -633,22 +676,23 @@ def run_backtest(
 
 
         analyzer = StrategyAnalyzer(
-            trades=broker.trade_history,
-            price_df=df,
+            trades=analysis_trades,
+            price_df=analysis_price_df,
             initial_capital=initial_capital,
             symbol=strat_sym,
             freq=freq,
             strategy_name=strategy_class.__name__,
             account_summary=account_summary,
-            equity_df=pd.DataFrame(equity_records),
+            equity_df=analysis_equity_df,
             describe_params=describe_params,
-            signal_records=getattr(strategy, 'raw_signal_records', []),
-            rebalance_records=getattr(strategy, 'signal_records', []),
+            signal_records=analysis_signal_records,
+            rebalance_records=analysis_rebalance_records,
+            selection_records=analysis_selection_records,
         )
         analyzer.run_config = _build_run_config(
             strategy_class=strategy_class,
             symbols_input=symbols_input,
-            start_date=start_date,
+            start_date=effective_start_date,
             end_date=end_date,
             freq=freq,
             data_type=data_type,

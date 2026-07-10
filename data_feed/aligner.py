@@ -114,7 +114,7 @@ class DataAligner:
 
             # 3. 持仓量 (oi) 与复权因子 (adjust_factor) 前值填充
             # 这两个属于存量和连续状态指标，没成交时，延续上一分钟的状态
-            state_fields = ['oi', 'adjust_factor']
+            state_fields = ['oi', 'adjust_factor', 'underlying_symbol']
             for field in state_fields:
                 if field in wide_df.columns.levels[0]:
                     wide_df[field] = wide_df[field].ffill()

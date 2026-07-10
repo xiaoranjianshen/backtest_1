@@ -73,3 +73,6 @@ class Trade:
     order_id: str  # 关联的原始订单 ID
     trade_id: str = field(default_factory=lambda: f"TRD_{uuid.uuid4().hex[:8]}")
     is_rollover: bool = False  # 是否为换月产生的成交
+    contract_symbol: str = ""  # 实际成交合约；普通主连交易可为空
+    roll_from_contract: str = ""  # 换月平仓对应的旧合约
+    roll_to_contract: str = ""  # 换月开仓对应的新合约

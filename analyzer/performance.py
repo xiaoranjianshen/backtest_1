@@ -182,7 +182,25 @@ def _time_axis_layout(values=None) -> dict:
     return layout
 
 
+def _trading_session_dates(values, freq: str) -> pd.Series:
+    """Return a stable session key for daily metric aggregation.
+
+    Chinese futures night trading crosses midnight. For intraday data, moving
+    the session boundary to 09:00 keeps the night segment and the following
+    early-morning segment in one analytical day. Daily bars already carry a
+    trading date, so their calendar date must remain unchanged.
+    """
+    source = values if isinstance(values, pd.Series) else pd.Series(values)
+    datetimes = pd.to_datetime(source, errors="coerce")
+    if str(freq).lower() in {"1d", "d", "day", "daily"}:
+        return datetimes.dt.normalize()
+    return (datetimes - pd.Timedelta(hours=9)).dt.normalize()
+
+
 REPORT_OVERVIEW_MARGIN = dict(l=72, r=72, t=16, b=54)
+REPORT_DAILY_RESOLUTION_MIN_DAYS = 365
+REPORT_DAILY_RESOLUTION_MIN_POINTS = 100_000
+INTRADAY_REPORT_FREQS = {"tick", "1m", "3m", "5m", "15m", "30m", "60m", "1h"}
 
 
 def _format_time_label(value, tick_label: bool = False) -> str:
@@ -301,7 +319,8 @@ class StrategyAnalyzer:
                  symbol: str, freq: str, strategy_name: str,
                  account_summary: dict = None, equity_df: pd.DataFrame = None,
                  describe_params: dict = None, signal_records: list | None = None,
-                 rebalance_records: list | None = None):
+                 rebalance_records: list | None = None,
+                 selection_records: list | None = None):
         self.trades = trades
         self.price_df = price_df.copy()
         self.initial_capital = initial_capital
@@ -313,6 +332,7 @@ class StrategyAnalyzer:
         self.describe_params = describe_params or {}
         self.signal_records = list(signal_records or [])
         self.rebalance_records = list(rebalance_records or [])
+        self.selection_records = list(selection_records or [])
         self.signal_df = pd.DataFrame()
 
         self.matched_trades = []
@@ -571,8 +591,10 @@ class StrategyAnalyzer:
         total_commission = actual_commission_events['commission'].sum() if not actual_commission_events.empty else 0.0
         turnover_events = self._get_turnover_events(None if is_total else sym_name)
         if not turnover_events.empty:
-            turnover_events['date'] = turnover_events['datetime'].dt.date
-            daily_turnover = turnover_events.groupby('date')['turnover'].sum()
+            turnover_events['session_date'] = _trading_session_dates(
+                turnover_events['datetime'], self.freq
+            )
+            daily_turnover = turnover_events.groupby('session_date')['turnover'].sum()
         else:
             daily_turnover = pd.Series(dtype=float)
 
@@ -594,8 +616,9 @@ class StrategyAnalyzer:
 
             df_match_copy = df_match.copy()
             df_match_copy['close_time'] = pd.to_datetime(df_match_copy['close_time'])
-            daily_pnl = df_match_copy.groupby(df_match_copy['close_time'].dt.date)['net_pnl'].sum()
-            active_trade_days = int(df_match_copy['close_time'].dt.date.nunique())
+            close_session_dates = _trading_session_dates(df_match_copy['close_time'], self.freq)
+            daily_pnl = df_match_copy.groupby(close_session_dates)['net_pnl'].sum()
+            active_trade_days = int(close_session_dates.nunique())
         else:
             win_rate_trade = pnl_ratio_trade = max_drawdown_trade = 0.0
             daily_pnl = pd.Series(dtype=float)
@@ -606,7 +629,7 @@ class StrategyAnalyzer:
             eq = eq.sort_values('datetime').drop_duplicates('datetime', keep='last')
             equity_curve = eq.set_index('datetime')['equity']
             daily_equity = (
-                eq.assign(session_date=eq['datetime'].dt.normalize())
+                eq.assign(session_date=_trading_session_dates(eq['datetime'], self.freq))
                 .groupby('session_date', sort=True)['equity']
                 .last()
                 .dropna()
@@ -737,11 +760,63 @@ class StrategyAnalyzer:
     # 🌟 以下为全新架构：后�? HTML Div 生成�?(不再调用 fig.show() �?.png)
     # =========================================================================
 
+    def _should_use_daily_report_resolution(self, values=None) -> bool:
+        """Use daily chart resolution for long intraday reports.
+
+        This affects only embedded Plotly payloads. Raw equity, trades, exported
+        CSV files, and performance metrics remain at the original backtest
+        frequency.
+        """
+
+        freq = str(getattr(self, "freq", "")).lower()
+        if freq not in INTRADAY_REPORT_FREQS:
+            return False
+
+        if values is None:
+            if getattr(self, "equity_df", None) is not None and not self.equity_df.empty:
+                values = self.equity_df["datetime"]
+            elif getattr(self, "price_df", None) is not None and not self.price_df.empty:
+                values = self.price_df["datetime"] if "datetime" in self.price_df.columns else self.price_df.index
+            else:
+                return False
+
+        dt = pd.to_datetime(pd.Series(values), errors="coerce").dropna()
+        if dt.empty:
+            return False
+        span_days = int((dt.max().normalize() - dt.min().normalize()).days) + 1
+        return (
+            span_days >= REPORT_DAILY_RESOLUTION_MIN_DAYS
+            or len(dt) >= REPORT_DAILY_RESOLUTION_MIN_POINTS
+        )
+
+    def _daily_last_frame_for_report(self, df: pd.DataFrame, datetime_col: str = "datetime") -> pd.DataFrame:
+        if df is None or df.empty or datetime_col not in df.columns:
+            return df.copy() if df is not None else pd.DataFrame()
+
+        out = df.copy()
+        out[datetime_col] = pd.to_datetime(out[datetime_col], errors="coerce")
+        out = out.dropna(subset=[datetime_col]).sort_values(datetime_col)
+        if out.empty or not self._should_use_daily_report_resolution(out[datetime_col]):
+            return out
+
+        out["_report_session_date"] = _trading_session_dates(out[datetime_col], self.freq)
+        out = out.groupby("_report_session_date", sort=True).tail(1).copy()
+        out[datetime_col] = out["_report_session_date"]
+        return out.drop(columns=["_report_session_date"])
+
+    def _daily_last_xy_for_report(self, x_values, y_values, value_col: str):
+        if x_values is None or len(x_values) == 0:
+            return [], []
+        df = pd.DataFrame({"datetime": list(x_values), value_col: list(y_values)})
+        df = self._daily_last_frame_for_report(df, "datetime")
+        return df["datetime"].tolist(), df[value_col].tolist()
+
     def _get_equity_series(self):
         """\u83b7\u53d6\u7528\u4e8e\u753b\u56fe\u7684\u8d44\u91d1\u6743\u76ca\u5e8f\u5217\u3002"""
         # 优先使用引擎记录的真实物理权�?
         if getattr(self, 'equity_df', None) is not None and not self.equity_df.empty:
             df = self.equity_df.sort_values('datetime').drop_duplicates('datetime', keep='last')
+            df = self._daily_last_frame_for_report(df, "datetime")
             return df['datetime'].tolist(), df['equity'].tolist()
 
         # 兜底：�?果没记录，就用平仓流水伪造一�?
@@ -794,6 +869,7 @@ class StrategyAnalyzer:
             commission_events = commission_events.sort_values('datetime')
             comm_x = commission_events['datetime'].tolist()
             comm_y = commission_events['commission'].cumsum().tolist()
+            comm_x, comm_y = self._daily_last_xy_for_report(comm_x, comm_y, "commission")
         else:
             comm_x = equity_x
             comm_y = [0] * len(equity_x)
@@ -949,8 +1025,20 @@ class StrategyAnalyzer:
         # 1. 计算滚动�?高点及回撤比�?
         peak = df_eq['equity'].cummax()
         # �?���???list，避�?Plotly �?pandas 索引�??为坐标�??
-        drawdown_y = ((df_eq['equity'] - peak) / peak).tolist()
-        drawdown_x = df_eq['datetime'].tolist()
+        drawdown_df = pd.DataFrame({
+            "datetime": pd.to_datetime(df_eq["datetime"], errors="coerce"),
+            "drawdown": ((df_eq['equity'] - peak) / peak),
+        }).dropna(subset=["datetime"])
+        if self._should_use_daily_report_resolution(drawdown_df["datetime"]):
+            drawdown_df["_report_session_date"] = _trading_session_dates(drawdown_df["datetime"], self.freq)
+            drawdown_df = (
+                drawdown_df
+                .groupby("_report_session_date", sort=True, as_index=False)
+                .agg(drawdown=("drawdown", "min"))
+                .rename(columns={"_report_session_date": "datetime"})
+            )
+        drawdown_y = drawdown_df["drawdown"].tolist()
+        drawdown_x = drawdown_df['datetime'].tolist()
         time_axis = _build_continuous_time_axis(drawdown_x)
         plot_x, time_labels = _map_to_continuous_time_axis(drawdown_x, time_axis)
 
@@ -1008,6 +1096,19 @@ class StrategyAnalyzer:
                     + df_eq['short_position_notional'].abs()
                 )
             df_eq['leverage'] = (df_eq['position_notional'].abs() / df_eq['equity']).fillna(0.0)
+            if self._should_use_daily_report_resolution(df_eq["datetime"]):
+                df_eq["_report_session_date"] = _trading_session_dates(df_eq["datetime"], self.freq)
+                agg_map = {
+                    "datetime": "last",
+                    "equity": "last",
+                    "position_notional": lambda s: float(pd.to_numeric(s, errors="coerce").abs().max()),
+                    "leverage": "max",
+                }
+                if has_directional_exposure:
+                    agg_map["long_position_notional"] = lambda s: float(pd.to_numeric(s, errors="coerce").abs().max())
+                    agg_map["short_position_notional"] = lambda s: float(pd.to_numeric(s, errors="coerce").abs().max())
+                df_eq = df_eq.groupby("_report_session_date", sort=True).agg(agg_map).reset_index()
+                df_eq["datetime"] = df_eq["_report_session_date"]
 
             time_axis = _build_continuous_time_axis(df_eq['datetime'])
             plot_x, time_labels = _map_to_continuous_time_axis(df_eq['datetime'], time_axis)
@@ -1792,13 +1893,14 @@ class StrategyAnalyzer:
 
             # 价格列强制转�?float，避�?pd.NA �?Plotly �?��为类�?��行号序列�?
             prices = pd.to_numeric(self.price_df[sym_col], errors='coerce').tolist()
+            plot_dates, plot_prices = self._daily_last_xy_for_report(dates, prices, "price")
             price_label = _price_field_label(price_field)
             sym_label = sym.upper()
 
             fig = go.Figure()
             # 1. 绘制底层价格主线�?
             fig.add_trace(go.Scatter(
-                x=dates, y=prices, mode='lines', name=f'{sym_label} {price_label}',
+                x=plot_dates, y=plot_prices, mode='lines', name=f'{sym_label} {price_label}',
                 line=dict(color='#9ca3af', width=1.5),
                 connectgaps=True,  # 忽略缺失值断�?
                 hovertemplate=f"\u54c1\u79cd: {sym_label}<br>\u65f6\u95f4: %{{x}}<br>{price_label}: \u00a5%{{y:,.0f}}<extra></extra>"
@@ -2255,6 +2357,9 @@ class StrategyAnalyzer:
     def _get_signal_diagnostics_interactive_html_div(self):
         df = self._build_signal_diagnostics_df()
         if df.empty:
+            stale_path = os.path.join(self.output_dir, "signal_events_full.csv")
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
             return """
             <div class="bg-white rounded-xl shadow-md border border-gray-100 p-8 text-center text-gray-500">
                 \u672c\u6b21\u56de\u6d4b\u6ca1\u6709\u8bb0\u5f55\u5230\u53ef\u89c2\u6d4b\u4fe1\u53f7\u3002\u8bf7\u786e\u8ba4\u7b56\u7565\u7ee7\u627f GeneralSignalStrategy\uff0c\u5e76\u542f\u7528 record_signals=True\u3002
@@ -2894,6 +2999,9 @@ class StrategyAnalyzer:
     def _get_signal_diagnostics_static_html_div(self):
         df = self._build_signal_diagnostics_df()
         if df.empty:
+            stale_path = os.path.join(self.output_dir, "signal_events_full.csv")
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
             return """
             <div class="bg-white rounded-xl shadow-md border border-gray-100 p-8 text-center text-gray-500">
                 \u672c\u6b21\u56de\u6d4b\u6ca1\u6709\u8bb0\u5f55\u5230\u53ef\u89c2\u6d4b\u4fe1\u53f7\u3002\u8bf7\u786e\u8ba4\u7b56\u7565\u7ee7\u627f GeneralSignalStrategy\uff0c\u5e76\u542f\u7528 record_signals=True\u3002            </div>
@@ -3360,6 +3468,16 @@ class StrategyAnalyzer:
             .replace('style="text-align: right;"', '')
         return html
 
+    def _export_selection_records(self):
+        if not self.selection_records:
+            stale_path = os.path.join(self.output_dir, "selection_records_full.csv")
+            if os.path.exists(stale_path):
+                os.remove(stale_path)
+            return
+        df = pd.DataFrame(self.selection_records)
+        output_path = os.path.join(self.output_dir, "selection_records_full.csv")
+        df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
     # =========================================================================
     # 报告生成入口
     # =========================================================================
@@ -3369,6 +3487,7 @@ class StrategyAnalyzer:
         _safe_print("[Analyzer] 正在生成绩效报告...")
         self._match_trades_fifo()
         self._calculate_metrics()
+        self._export_selection_records()
 
         if not self.metrics:
             _safe_print("[Analyzer Warning] \u56de\u6d4b\u671f\u95f4\u65e0\u5b8c\u6574\u5f00\u5e73\u4ed3\u8bb0\u5f55\uff0c\u65e0\u6cd5\u751f\u6210\u5206\u6790\u62a5\u544a\u3002")

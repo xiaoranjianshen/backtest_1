@@ -19,6 +19,9 @@ from broker.match_engine import MatchEngine
 class MainContractRollover:
     """未复权主连换月执行器"""
 
+    def __init__(self):
+        self._processed_events = set()
+
     @staticmethod
     def is_enabled(data_type: str) -> bool:
         return data_type == 'main'
@@ -33,9 +36,9 @@ class MainContractRollover:
     def process(self, broker: MatchEngine, current_time: datetime, bar_data: Dict[str, dict],
                 last_close_prices: Dict[str, float]) -> int:
         """
-        执行换月：
-        - close_price: 昨日收盘价（用于平旧仓，结算T-1→T的真实盈亏）
-        - roll_open_price: T日开盘价（用于开新仓）
+        使用数据层提供的旧合约收盘价与新合约开盘价执行换月。
+
+        last_close_prices 仅为兼容旧调用签名保留，不再作为价格回退来源。
         """
         rolled_symbols = 0
         account = broker.account
@@ -46,12 +49,43 @@ class MainContractRollover:
             if not self._is_month_change(bar):
                 continue
 
-            roll_open_price = bar.get('open')
-            if roll_open_price is None or pd.isna(roll_open_price):
+            old_contract_value = bar.get('previous_underlying_symbol')
+            new_contract_value = bar.get('underlying_symbol')
+            old_contract = (
+                '' if old_contract_value is None or pd.isna(old_contract_value)
+                else str(old_contract_value).strip()
+            )
+            new_contract = (
+                '' if new_contract_value is None or pd.isna(new_contract_value)
+                else str(new_contract_value).strip()
+            )
+            old_close_price = bar.get('roll_old_close')
+            roll_open_price = bar.get('roll_new_open')
+
+            valid_contracts = (
+                old_contract
+                and new_contract
+                and old_contract.lower() != new_contract.lower()
+            )
+            try:
+                valid_prices = all(
+                    value is not None and not pd.isna(value) and float(value) > 0
+                    for value in (old_close_price, roll_open_price)
+                )
+            except (TypeError, ValueError):
+                valid_prices = False
+            if not valid_contracts or not valid_prices:
+                print(
+                    f"[Rollover Warning] {current_time} | {sym} | "
+                    "换月事件缺少有效的旧/新合约或真实价格，已跳过。"
+                )
                 continue
 
-            # 昨日收盘价（用于结算旧仓）
-            old_close_price = last_close_prices.get(sym, roll_open_price)
+            old_close_price = float(old_close_price)
+            roll_open_price = float(roll_open_price)
+            event_key = (sym, current_time, old_contract.lower(), new_contract.lower())
+            if event_key in self._processed_events:
+                continue
 
             sym_rolled = False
             from broker.order import Direction
@@ -66,12 +100,18 @@ class MainContractRollover:
 
                 broker.execute_rollover(
                     sym, pos_direction, volume,
-                    old_close_price, roll_open_price, current_time
+                    old_close_price, roll_open_price, current_time,
+                    old_contract=old_contract,
+                    new_contract=new_contract,
                 )
                 sym_rolled = True
 
             if sym_rolled:
+                self._processed_events.add(event_key)
                 rolled_symbols += 1
-                print(f"[Rollover] {current_time} | {sym} | 昨收:{old_close_price} -> 新开:{roll_open_price}")
+                print(
+                    f"[Rollover] {current_time} | {old_contract} -> {new_contract} | "
+                    f"旧合约收盘:{old_close_price} -> 新合约开盘:{roll_open_price}"
+                )
 
         return rolled_symbols

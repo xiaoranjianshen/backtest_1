@@ -4,11 +4,33 @@ from datetime import datetime
 
 import pandas as pd
 
-from analyzer.performance import StrategyAnalyzer
+from analyzer.performance import StrategyAnalyzer, _trading_session_dates
 from broker.order import Direction, Offset, Trade
 
 
 class AnalyzerMetricsTest(unittest.TestCase):
+    def test_intraday_metric_dates_keep_cross_midnight_night_session_together(self):
+        timestamps = pd.Series(pd.to_datetime([
+            "2026-07-10 21:00:00",
+            "2026-07-11 01:00:00",
+            "2026-07-11 09:00:00",
+        ]))
+
+        session_dates = _trading_session_dates(timestamps, "1m")
+
+        self.assertEqual(session_dates.iloc[0], session_dates.iloc[1])
+        self.assertNotEqual(session_dates.iloc[1], session_dates.iloc[2])
+
+    def test_daily_metric_dates_keep_daily_bar_date(self):
+        timestamps = pd.Series(pd.to_datetime([
+            "2026-07-10 00:00:00",
+            "2026-07-11 00:00:00",
+        ]))
+
+        session_dates = _trading_session_dates(timestamps, "1d")
+
+        self.assertEqual(session_dates.tolist(), timestamps.tolist())
+
     def test_trade_days_and_market_days_are_reported_separately(self):
         equity_df = pd.DataFrame([
             {"datetime": "2026-04-01 09:00:00", "equity": 1_000_000.0, "position_notional": 0.0},

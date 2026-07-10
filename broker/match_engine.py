@@ -320,7 +320,8 @@ class MatchEngine:
         return new_trades
 
     def execute_rollover(self, symbol: str, pos_direction: Direction, volume: int,
-                         old_close_price: float, roll_open_price: float, current_time: datetime):
+                         old_close_price: float, roll_open_price: float, current_time: datetime,
+                         old_contract: str = "", new_contract: str = ""):
         """
         换月：按昨日收盘价平旧仓，按T日开盘价开新仓
         - old_close_price: 昨日收盘价（用于结算旧仓，捕获T-1日→T日的真实盈亏）
@@ -341,7 +342,8 @@ class MatchEngine:
         if close_yd > 0:
             self._execute_rollover_close(
                 raw_code, close_direction, pos_direction, close_yd,
-                Offset.CLOSE, old_close_price, current_time
+                Offset.CLOSE, old_close_price, current_time,
+                old_contract=old_contract, new_contract=new_contract,
             )
 
         # 再平今仓
@@ -349,7 +351,8 @@ class MatchEngine:
         if remaining > 0:
             self._execute_rollover_close(
                 raw_code, close_direction, pos_direction, remaining,
-                Offset.CLOSE_TODAY, old_close_price, current_time
+                Offset.CLOSE_TODAY, old_close_price, current_time,
+                old_contract=old_contract, new_contract=new_contract,
             )
 
         # 换月开新仓等价于系统市价换仓，使用 fee_model 的默认滑点。
@@ -366,6 +369,9 @@ class MatchEngine:
             commission=commission, slippage_cost=slippage_cost,
             order_id=f"ROL_OPEN_{raw_code}_{current_time.strftime('%Y%m%d%H%M%S')}",
             is_rollover=True,
+            contract_symbol=new_contract,
+            roll_from_contract=old_contract,
+            roll_to_contract=new_contract,
         )
         self.trade_history.append(open_trade)
         account.process_trade(open_trade)
@@ -374,7 +380,8 @@ class MatchEngine:
 
     def _execute_rollover_close(self, raw_code: str, close_direction: Direction,
                                 pos_direction: Direction, volume: int,
-                                close_offset: Offset, close_price: float, current_time: datetime):
+                                close_offset: Offset, close_price: float, current_time: datetime,
+                                old_contract: str = "", new_contract: str = ""):
         """换月平仓：按昨日收盘价结算，走正常流程"""
         account = self.account
         pos_key = account._get_position_key(raw_code, pos_direction)
@@ -390,6 +397,9 @@ class MatchEngine:
             commission=commission, slippage_cost=0.0,
             order_id=f"ROL_CLOSE_{raw_code}_{current_time.strftime('%Y%m%d%H%M%S')}_{close_offset.value}",
             is_rollover=True,
+            contract_symbol=old_contract,
+            roll_from_contract=old_contract,
+            roll_to_contract=new_contract,
         )
         self.trade_history.append(close_trade)
         account.process_trade(close_trade)

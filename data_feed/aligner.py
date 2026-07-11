@@ -114,7 +114,7 @@ class DataAligner:
 
             # 3. 持仓量 (oi) 与复权因子 (adjust_factor) 前值填充
             # 这两个属于存量和连续状态指标，没成交时，延续上一分钟的状态
-            state_fields = ['oi', 'adjust_factor', 'underlying_symbol']
+            state_fields = ['oi', 'adjust_factor', 'underlying_symbol', 'trading_date']
             for field in state_fields:
                 if field in wide_df.columns.levels[0]:
                     wide_df[field] = wide_df[field].ffill()
@@ -146,9 +146,18 @@ class DataAligner:
             if 'is_fresh' in wide_df.columns.levels[0]:
                 wide_df['is_fresh'] = wide_df['is_fresh'].fillna(0.0)
 
+            if 'month_change' in wide_df.columns.levels[0]:
+                wide_df['month_change'] = wide_df['month_change'].fillna(0.0)
+
             # 持仓量延续上一笔状态
             if 'oi' in wide_df.columns.levels[0]:
                 wide_df['oi'] = wide_df['oi'].ffill()
+
+            if 'underlying_symbol' in wide_df.columns.levels[0]:
+                wide_df['underlying_symbol'] = wide_df['underlying_symbol'].ffill()
+
+            if 'trading_date' in wide_df.columns.levels[0]:
+                wide_df['trading_date'] = wide_df['trading_date'].ffill()
 
         # ---------------------------------------------------------
         # 步骤 4：截断品种上市前的盲区

@@ -70,6 +70,7 @@ def extract_bar_data(row, columns_level_1):
                 'previous_underlying_symbol',
                 'roll_old_close',
                 'roll_new_open',
+                'trading_date',
             ):
                 value = _row_value(row, field, full_sym, pd.NA)
                 if value is not None and not pd.isna(value):
@@ -147,8 +148,18 @@ def extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos: dict)
             'cum_volume': _tuple_value(row_values, col_pos, 'volume', full_sym, 0.0),
             'oi': _tuple_value(row_values, col_pos, 'oi', full_sym, pd.NA),
             'is_fresh': bool(_tuple_value(row_values, col_pos, 'is_fresh', full_sym, 1.0)),
-            'month_change': 0,
+            'month_change': _tuple_value(row_values, col_pos, 'month_change', full_sym, 0),
         }
+        for field in (
+            'underlying_symbol',
+            'previous_underlying_symbol',
+            'roll_old_close',
+            'roll_new_open',
+            'trading_date',
+        ):
+            value = _tuple_value(row_values, col_pos, field, full_sym, pd.NA)
+            if value is not None and not pd.isna(value):
+                bar[field] = value
         if not pd.isna(bid) and not pd.isna(ask) and bid > 0 and ask > 0:
             bar['mid_price'] = (float(bid) + float(ask)) / 2.0
             bar['spread'] = float(ask) - float(bid)
@@ -166,6 +177,18 @@ def _extract_close_prices(bar_data: dict) -> dict:
         if data and not pd.isna(data.get('close', pd.NA)):
             prices[sym] = data['close']
     return prices
+
+
+def _resolve_trading_date(current_time, bar_data: dict):
+    """优先使用数据层交易日，避免夜盘跨午夜时提前日结。"""
+    for data in bar_data.values():
+        if not data or not bool(data.get('is_fresh', True)):
+            continue
+        value = data.get('trading_date')
+        if value is None or pd.isna(value):
+            continue
+        return pd.Timestamp(value).date()
+    return pd.Timestamp(current_time).date()
 
 
 def _calc_position_exposure(account: Account, current_prices: dict) -> dict:
@@ -531,13 +554,12 @@ def run_backtest(
         for row_tuple in df.itertuples(index=True, name=None):
             current_time = row_tuple[0]
             row_values = row_tuple[1:]
-            current_date = current_time.date()
+            bar_data = extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos)
 
+            current_date = _resolve_trading_date(current_time, bar_data)
             if last_date is not None and current_date != last_date:
                 account.settle_daily(last_close_prices)
-
             last_date = current_date
-            bar_data = extract_tick_bar_data_from_tuple(row_values, columns_level_1, col_pos)
 
             if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
                 continue
@@ -557,14 +579,12 @@ def run_backtest(
                 equity_records.append(_build_equity_record(current_time, account, close_prices))
     else:
         for current_time, row in df.iterrows():
-            current_date = current_time.date()
+            bar_data = extract_bar_data(row, columns_level_1)
 
+            current_date = _resolve_trading_date(current_time, bar_data)
             if last_date is not None and current_date != last_date:
                 account.settle_daily(last_close_prices)
-
             last_date = current_date
-
-            bar_data = extract_bar_data(row, columns_level_1)
 
             if strat_sym != 'multi' and pd.isna(bar_data.get(strat_sym, {}).get('close', pd.NA)):
                 continue

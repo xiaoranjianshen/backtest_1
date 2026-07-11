@@ -103,6 +103,9 @@ class MainContractRollover:
                     old_close_price, roll_open_price, current_time,
                     old_contract=old_contract,
                     new_contract=new_contract,
+                    trading_date=pd.Timestamp(
+                        bar.get('trading_date', current_time)
+                    ).normalize(),
                 )
                 sym_rolled = True
 

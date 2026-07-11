@@ -9,17 +9,85 @@ from broker.order import Direction, Offset, Trade
 
 
 class AnalyzerMetricsTest(unittest.TestCase):
-    def test_intraday_metric_dates_keep_cross_midnight_night_session_together(self):
+    def test_intraday_metric_dates_match_the_following_trading_day(self):
         timestamps = pd.Series(pd.to_datetime([
-            "2026-07-10 21:00:00",
-            "2026-07-11 01:00:00",
-            "2026-07-11 09:00:00",
+            "2026-07-13 21:00:00",
+            "2026-07-14 01:00:00",
+            "2026-07-14 09:00:00",
         ]))
 
         session_dates = _trading_session_dates(timestamps, "1m")
 
         self.assertEqual(session_dates.iloc[0], session_dates.iloc[1])
-        self.assertNotEqual(session_dates.iloc[1], session_dates.iloc[2])
+        self.assertEqual(session_dates.iloc[1], session_dates.iloc[2])
+        self.assertEqual(session_dates.iloc[0], pd.Timestamp("2026-07-14"))
+
+    def test_total_daily_metrics_include_first_session_return(self):
+        datetimes = pd.to_datetime(["2026-01-02 15:00:00", "2026-01-05 15:00:00"])
+        price_df = pd.DataFrame({("close", "rb"): [100.0, 100.0]}, index=datetimes)
+        price_df.columns = pd.MultiIndex.from_tuples(price_df.columns)
+        equity_df = pd.DataFrame([
+            {"datetime": datetimes[0], "trading_date": "2026-01-02", "equity": 1_100_000.0, "position_notional": 0.0},
+            {"datetime": datetimes[1], "trading_date": "2026-01-05", "equity": 1_100_000.0, "position_notional": 0.0},
+        ])
+        analyzer = StrategyAnalyzer(
+            trades=[], price_df=price_df, initial_capital=1_000_000.0,
+            symbol="MULTI", freq="1m", strategy_name="FirstDayReturnTest",
+            equity_df=equity_df,
+        )
+
+        metrics = analyzer._calc_single_metrics(pd.DataFrame(), "MULTI", "FirstDayReturnTest", is_total=True)
+
+        self.assertEqual(metrics["逐日胜率"], "50.00%")
+        self.assertNotEqual(metrics["年化Sharpe"], "0.00")
+
+    def test_drawdown_includes_loss_before_first_equity_snapshot(self):
+        datetimes = pd.to_datetime(["2026-01-02 15:00:00", "2026-01-05 15:00:00"])
+        price_df = pd.DataFrame({("close", "rb"): [100.0, 100.0]}, index=datetimes)
+        price_df.columns = pd.MultiIndex.from_tuples(price_df.columns)
+        analyzer = StrategyAnalyzer(
+            trades=[], price_df=price_df, initial_capital=1_000_000.0,
+            symbol="MULTI", freq="1d", strategy_name="FirstDayDrawdownTest",
+            equity_df=pd.DataFrame([
+                {"datetime": datetimes[0], "trading_date": datetimes[0], "equity": 900_000.0},
+                {"datetime": datetimes[1], "trading_date": datetimes[1], "equity": 900_000.0},
+            ]),
+        )
+
+        metrics = analyzer._calc_single_metrics(
+            pd.DataFrame(), "MULTI", "FirstDayDrawdownTest", is_total=True
+        )
+
+        self.assertEqual(metrics["最大回撤率"], "-10.00%")
+
+    def test_multi_asset_curve_exposes_sector_controls(self):
+        datetimes = pd.to_datetime(["2026-01-02", "2026-01-05"])
+        trades = [
+            Trade("rb", Direction.LONG, Offset.OPEN, 1, 100.0, datetimes[0], 0.0, 0.0, "rb-open"),
+            Trade("rb", Direction.SHORT, Offset.CLOSE, 1, 110.0, datetimes[1], 0.0, 0.0, "rb-close"),
+            Trade("au", Direction.LONG, Offset.OPEN, 1, 500.0, datetimes[0], 0.0, 0.0, "au-open"),
+            Trade("au", Direction.SHORT, Offset.CLOSE, 1, 510.0, datetimes[1], 0.0, 0.0, "au-close"),
+        ]
+        price_df = pd.DataFrame(
+            {("close", "rb"): [100.0, 110.0], ("close", "au"): [500.0, 510.0]},
+            index=datetimes,
+        )
+        price_df.columns = pd.MultiIndex.from_tuples(price_df.columns)
+        analyzer = StrategyAnalyzer(
+            trades=trades, price_df=price_df, initial_capital=1_000_000.0,
+            symbol="MULTI", freq="1d", strategy_name="SectorControlTest",
+            equity_df=pd.DataFrame([
+                {"datetime": datetimes[0], "trading_date": datetimes[0], "equity": 1_000_000.0},
+                {"datetime": datetimes[1], "trading_date": datetimes[1], "equity": 1_000_020.0},
+            ]),
+        )
+        analyzer._match_trades_fifo()
+
+        html = analyzer.get_multi_asset_pnl_curves_html_div()
+
+        self.assertIn("pnl-curve-sector-toggle", html)
+        self.assertIn("data-sector=", html)
+        self.assertIn("pnl-curve-mode", html)
 
     def test_daily_metric_dates_keep_daily_bar_date(self):
         timestamps = pd.Series(pd.to_datetime([

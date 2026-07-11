@@ -7,6 +7,21 @@ import sys
 import time
 import webbrowser
 import pandas as pd
+from plotly.offline import get_plotlyjs
+
+
+def _load_report_javascript() -> tuple[str, str, str]:
+    """Load local JavaScript so generated reports work without internet access."""
+    project_root = os.path.dirname(os.path.abspath(__file__))
+    vendor_dir = os.path.join(project_root, "web_static", "vendor")
+    assets = []
+    for filename in ("html2canvas.min.js", "jspdf.umd.min.js"):
+        path = os.path.join(vendor_dir, filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(f"报告依赖缺失: {path}")
+        with open(path, "r", encoding="utf-8") as handle:
+            assets.append(handle.read())
+    return get_plotlyjs(), assets[0], assets[1]
 
 
 def _is_port_open(port: int, host: str = "127.0.0.1") -> bool:
@@ -78,6 +93,7 @@ def _write_active_report_config(analyzer):
 
 
 def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
+    plotly_js, html2canvas_js, jspdf_js = _load_report_javascript()
     if analyzer is None:
         print("[Engine Front] 未接收到有效分析数据，已终止看板生成。")
         return None
@@ -205,13 +221,11 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
     <head>
         <meta charset="UTF-8">
         <title>{analyzer.strategy_name} - Backtest</title>
-        <script src="https://cdn.tailwindcss.com"></script>
-        <script src="https://cdn.plot.ly/plotly-2.24.1.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-        <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+        <script>{plotly_js}</script>
+        <script>{html2canvas_js}</script>
+        <script>{jspdf_js}</script>
         <style>
-            /* Local fallback styles. The report should remain readable even if
-               Tailwind's CDN script is blocked or slow on large inline reports. */
+            /* Self-contained utility styles used by the generated report. */
             body {{ background-color: #f3f4f6; }}
             .min-h-screen {{ min-height: 100vh; }}
             .w-full {{ width: 100%; }}
@@ -219,6 +233,8 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .mx-auto {{ margin-left: auto; margin-right: auto; }}
             .flex {{ display: flex; }}
             .grid {{ display: grid; }}
+            .grid-cols-1 {{ grid-template-columns: minmax(0, 1fr); }}
+            .grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
             .hidden {{ display: none; }}
             .block {{ display: block; }}
             .items-end {{ align-items: flex-end; }}
@@ -256,6 +272,12 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .space-x-3 > * + * {{ margin-left: 0.75rem; }}
             .space-y-4 > * + * {{ margin-top: 1rem; }}
             .space-y-6 > * + * {{ margin-top: 1.5rem; }}
+            .pnl-curve-mode, .pnl-curve-sector-toggle {{
+                border: 1px solid #d1d5db; background: #fff; color: #374151;
+                border-radius: 6px; padding: 6px 10px; cursor: pointer;
+            }}
+            .pnl-curve-mode.is-active {{ background: #1e3a8a; color: #fff; border-color: #1e3a8a; }}
+            .pnl-curve-sector-toggle.is-muted {{ opacity: 0.42; text-decoration: line-through; }}
             .bg-white {{ background-color: #ffffff; }}
             .bg-gray-50 {{ background-color: #f9fafb; }}
             .bg-gray-100 {{ background-color: #f3f4f6; }}
@@ -313,8 +335,8 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .shadow-lg {{ box-shadow: 0 10px 15px -3px rgba(0,0,0,0.10), 0 4px 6px -4px rgba(0,0,0,0.10); }}
             .transition-all {{ transition: all 0.15s ease; }}
             .transition-colors {{ transition: background-color 0.15s ease, color 0.15s ease; }}
-            .focus\:outline-none:focus {{ outline: 2px solid transparent; outline-offset: 2px; }}
-            .max-h-\[500px\] {{ max-height: 500px; }}
+            .focus\\:outline-none:focus {{ outline: 2px solid transparent; outline-offset: 2px; }}
+            .max-h-\\[500px\\] {{ max-height: 500px; }}
             .bg-white.rounded-xl,
             .bg-white.rounded-lg {{
                 background: #ffffff;
@@ -362,7 +384,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 color: #374151;
             }}
             @media (min-width: 1280px) {{
-                .xl\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+                .xl\\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
             }}
             .tab-content {{ display: none; }}
             .tab-content.active {{ display: block; animation: fadeIn 0.3s ease-in-out; }}
@@ -759,7 +781,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 const originalText = btn.innerText;
 
                 if (!window.html2canvas || !window.jspdf) {{
-                    alert('PDF 下载组件加载失败，请确认网络可访问 jsDelivr CDN 后刷新页面。');
+                    alert('PDF 下载组件加载失败，请重新生成回测报告。');
                     return;
                 }}
 

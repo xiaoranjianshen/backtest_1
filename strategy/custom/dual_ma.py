@@ -15,7 +15,8 @@ class DualMAStrategy(GeneralSignalStrategy):
         self,
         broker,
         account,
-        symbol,
+        symbol="multi",
+        target_symbols=None,
         fast_window=10,
         slow_window=30,
         **kwargs,
@@ -24,11 +25,10 @@ class DualMAStrategy(GeneralSignalStrategy):
             broker=broker,
             account=account,
             symbol=symbol,
-            target_symbols=[symbol],
+            target_symbols=target_symbols,
             **kwargs,
         )
 
-        self.symbol = self.symbols[0]
         self.fast_window = int(fast_window)
         self.slow_window = int(slow_window)
         if self.fast_window <= 0 or self.slow_window <= 0:
@@ -36,54 +36,54 @@ class DualMAStrategy(GeneralSignalStrategy):
         if self.fast_window >= self.slow_window:
             raise ValueError("fast_window 必须小于 slow_window")
 
-        self.close_history = []
+        self.close_history = {sym: [] for sym in self.symbols}
 
     def on_init(self):
         super().on_init()
         print(
-            f"[Strategy DualMA] symbol={self.symbol} | "
+            f"[Strategy DualMA] symbols={self.symbols} | "
             f"fast={self.fast_window} | slow={self.slow_window}"
         )
 
     def generate_signals(self, bar_data: dict) -> dict:
-        if self.symbol not in bar_data or pd.isna(bar_data[self.symbol].get("close", pd.NA)):
-            return {}
+        signals = {}
+        for symbol in self.symbols:
+            bar = bar_data.get(symbol)
+            if not bar or pd.isna(bar.get("close", pd.NA)):
+                continue
 
-        close_price = bar_data[self.symbol]["close"]
-        self.close_history.append(close_price)
-        if len(self.close_history) > self.slow_window + 1:
-            self.close_history.pop(0)
+            close_price = float(bar["close"])
+            history = self.close_history.setdefault(symbol, [])
+            history.append(close_price)
+            if len(history) > self.slow_window + 1:
+                history.pop(0)
 
-        if len(self.close_history) < self.slow_window + 1:
-            return {
-                self.symbol: {
+            if len(history) < self.slow_window + 1:
+                signals[symbol] = {
                     "signal": None,
                     "reason": "warming_up",
-                    "metrics": {"close": close_price, "history_len": len(self.close_history)},
+                    "metrics": {"close": close_price, "history_len": len(history)},
                 }
-            }
+                continue
 
-        prices = self.close_history
-        fast_ma_curr = sum(prices[-self.fast_window:]) / self.fast_window
-        slow_ma_curr = sum(prices[-self.slow_window:]) / self.slow_window
-        fast_ma_prev = sum(prices[-(self.fast_window + 1):-1]) / self.fast_window
-        slow_ma_prev = sum(prices[-(self.slow_window + 1):-1]) / self.slow_window
+            fast_ma_curr = sum(history[-self.fast_window:]) / self.fast_window
+            slow_ma_curr = sum(history[-self.slow_window:]) / self.slow_window
+            fast_ma_prev = sum(history[-(self.fast_window + 1):-1]) / self.fast_window
+            slow_ma_prev = sum(history[-(self.slow_window + 1):-1]) / self.slow_window
 
-        golden_cross = fast_ma_prev <= slow_ma_prev and fast_ma_curr > slow_ma_curr
-        death_cross = fast_ma_prev >= slow_ma_prev and fast_ma_curr < slow_ma_curr
+            golden_cross = fast_ma_prev <= slow_ma_prev and fast_ma_curr > slow_ma_curr
+            death_cross = fast_ma_prev >= slow_ma_prev and fast_ma_curr < slow_ma_curr
+            if golden_cross:
+                signal = 1
+                reason = "golden_cross"
+            elif death_cross:
+                signal = -1
+                reason = "death_cross"
+            else:
+                signal = None
+                reason = "hold"
 
-        if golden_cross:
-            signal = 1
-            reason = "golden_cross"
-        elif death_cross:
-            signal = -1
-            reason = "death_cross"
-        else:
-            signal = None
-            reason = "hold"
-
-        return {
-            self.symbol: {
+            signals[symbol] = {
                 "signal": signal,
                 "reason": reason,
                 "metrics": {
@@ -94,4 +94,5 @@ class DualMAStrategy(GeneralSignalStrategy):
                     "slow_ma_prev": slow_ma_prev,
                 },
             }
-        }
+
+        return signals

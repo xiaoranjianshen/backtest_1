@@ -53,6 +53,19 @@ class UiConfigIntegrationTest(unittest.TestCase):
         })
 
         self.assertEqual(args["strategy_class"].__module__, "strategy.custom.dual_ma")
+
+    def test_dual_ma_keeps_every_selected_symbol(self):
+        args = build_run_arguments({
+            "strategy": "dual_ma",
+            "symbols": ["rb", "au", "ag"],
+            "start_date": "2026-01-01",
+            "end_date": "2026-02-01",
+            "freq": "1d",
+            "data_type": "main",
+        })
+
+        self.assertEqual(args["symbols_input"], ["rb", "au", "ag"])
+        self.assertEqual(args["strategy_kwargs"]["target_symbols"], ["rb", "au", "ag"])
         self.assertEqual(args["strategy_class"].__name__, "DualMAStrategy")
 
     def test_zscore_reversal_config_builds_strategy_kwargs(self):

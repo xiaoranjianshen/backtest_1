@@ -8,6 +8,58 @@ from portfolio.account import Account
 
 
 class AccountExecutionAccountingTest(unittest.TestCase):
+    def test_pending_yesterday_close_releases_only_yesterday_margin_for_risk_check(self):
+        account = Account(initial_capital=1_000_000.0)
+        broker = MatchEngine(account)
+        t0 = datetime(2025, 1, 2, 9, 0, 0)
+        account.positions['rb_LONG'] = {
+            'yd_volume': 1, 'td_volume': 1,
+            'yd_avg_price': 100.0, 'td_avg_price': 200.0,
+            'avg_price': 150.0,
+            'yd_frozen_margin': 90.0, 'td_frozen_margin': 180.0,
+            'frozen_margin': 270.0,
+        }
+        broker.pending_orders.append(Order(
+            symbol='rb', direction=Direction.SHORT, offset=Offset.CLOSE,
+            volume=1, price=100.0, insert_time=t0,
+        ))
+        opening_order = Order(
+            symbol='rb', direction=Direction.SHORT, offset=Offset.OPEN,
+            volume=1, price=100.0, insert_time=t0,
+        )
+
+        released = broker._estimate_pending_close_margin_release(opening_order)
+
+        self.assertAlmostEqual(released, 90.0)
+
+    def test_closing_yesterday_layer_releases_only_yesterday_margin(self):
+        account = Account(initial_capital=1_000_000.0)
+        t0 = datetime(2025, 1, 2, 9, 0, 0)
+
+        account.process_trade(Trade(
+            symbol="rb", direction=Direction.LONG, offset=Offset.OPEN,
+            volume=1, price=100.0, trade_time=t0,
+            commission=0.0, slippage_cost=0.0, order_id="open_yd",
+        ))
+        account.settle_daily({"rb": 100.0})
+        account.process_trade(Trade(
+            symbol="rb", direction=Direction.LONG, offset=Offset.OPEN,
+            volume=1, price=200.0, trade_time=t0,
+            commission=0.0, slippage_cost=0.0, order_id="open_td",
+        ))
+
+        account.process_trade(Trade(
+            symbol="rb", direction=Direction.SHORT, offset=Offset.CLOSE,
+            volume=1, price=100.0, trade_time=t0,
+            commission=0.0, slippage_cost=0.0, order_id="close_yd",
+        ))
+
+        position = account.positions["rb_LONG"]
+        self.assertAlmostEqual(position["frozen_margin"], 180.0)
+        self.assertAlmostEqual(position["td_frozen_margin"], 180.0)
+        self.assertAlmostEqual(position["yd_frozen_margin"], 0.0)
+        self.assertAlmostEqual(account.frozen_margin, 180.0)
+
     def test_close_today_uses_today_average_price_not_mixed_average(self):
         account = Account(initial_capital=1_000_000.0)
         t0 = datetime(2025, 1, 2, 9, 0, 0)

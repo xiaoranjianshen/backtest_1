@@ -196,12 +196,13 @@ def _build_breakout_pyramid(config: dict[str, Any], spec: StrategySpec) -> dict[
 
 
 def _build_dual_ma(config: dict[str, Any], spec: StrategySpec) -> dict[str, Any]:
-    symbol = _parse_symbols(config.get("symbols", config.get("symbol")))[0]
+    symbols = _parse_symbols(config.get("symbols", config.get("symbol")))
     args = _base_args(config)
     args.update({
         "strategy_class": _import_class(spec.module, spec.class_name),
-        "symbols_input": symbol,
+        "symbols_input": symbols,
         "strategy_kwargs": {
+            "target_symbols": symbols,
             "fast_window": int(config.get("fast_window", 10)),
             "slow_window": int(config.get("slow_window", 30)),
             **_general_signal_kwargs(config),

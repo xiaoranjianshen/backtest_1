@@ -2,11 +2,18 @@
 import os
 import pandas as pd
 import hashlib
+import json
+import time
 from clickhouse_driver import Client
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import CH_HOST, CH_USER, CH_PASS, CACHE_DIR, DB_ROUTING_MAP
+from data_feed.trading_calendar import infer_trading_dates
+
+
+CACHE_SCHEMA_VERSION = "v6"
+DEFAULT_CACHE_TTL_SECONDS = 24 * 60 * 60
 
 
 class ClickHouseLoader:
@@ -24,17 +31,41 @@ class ClickHouseLoader:
     def _uses_main_rollover_metadata(freq: str, data_type: str) -> bool:
         return data_type == 'main' and freq in {'tick', '1m', '5m', '1d'}
 
+    def _build_cache_path(self, symbols, start_date, end_date, freq, data_type) -> str:
+        route_data_type = 'all' if self._uses_intraday_main_rollover(freq, data_type) else data_type
+        cache_identity = {
+            'schema': CACHE_SCHEMA_VERSION,
+            'host': CH_HOST,
+            'route': self._get_table_info(freq, route_data_type),
+            'mapping_table': 'daily_adj_factor' if self._uses_main_rollover_metadata(freq, data_type) else None,
+            'symbols': sorted(str(symbol) for symbol in symbols),
+            'start_date': str(start_date),
+            'end_date': str(end_date),
+            'freq': str(freq),
+            'data_type': str(data_type),
+        }
+        cache_key = json.dumps(cache_identity, sort_keys=True, ensure_ascii=True)
+        cache_hash = hashlib.md5(cache_key.encode('utf-8')).hexdigest()
+        return os.path.join(CACHE_DIR, f"cache_{cache_hash}.parquet")
+
+    @staticmethod
+    def _cache_is_fresh(cache_path: str) -> bool:
+        if not os.path.exists(cache_path):
+            return False
+        ttl_seconds = int(os.getenv('BACKTEST_CACHE_TTL_SECONDS', DEFAULT_CACHE_TTL_SECONDS))
+        return ttl_seconds <= 0 or time.time() - os.path.getmtime(cache_path) <= ttl_seconds
+
     def get_data(self, symbols: list, start_date: str, end_date: str, freq: str = '1d',
                  data_type: str = 'main') -> pd.DataFrame:
-        cache_key = f"{'_'.join(symbols)}_{start_date}_{end_date}_{freq}_{data_type}"
-        if self._uses_main_rollover_metadata(freq, data_type):
-            cache_key = f"{cache_key}_contract_mapped_rollover_v5"
-        cache_hash = hashlib.md5(cache_key.encode('utf-8')).hexdigest()
-        cache_path = os.path.join(CACHE_DIR, f"cache_{cache_hash}.parquet")
+        cache_path = self._build_cache_path(symbols, start_date, end_date, freq, data_type)
+        cache_hash = os.path.basename(cache_path).removeprefix('cache_').removesuffix('.parquet')
 
-        if os.path.exists(cache_path):
+        if self._cache_is_fresh(cache_path):
             print(f"[Data Loader] 命中本地缓存: {cache_hash[:8]}，正在加载。")
-            return pd.read_parquet(cache_path)
+            try:
+                return pd.read_parquet(cache_path)
+            except Exception as exc:
+                print(f"[Data Loader Warning] 缓存读取失败，将重新查询数据源: {exc}")
 
         print("[Data Loader] 正在从 ClickHouse 获取数据...")
         if self._uses_intraday_main_rollover(freq, data_type):
@@ -45,8 +76,22 @@ class ClickHouseLoader:
             if data_type == 'main' and freq == '1d':
                 df = self._attach_daily_rollover_marks(df)
 
+        if not df.empty and str(freq).lower() not in {'1d', 'd', 'day', 'daily'}:
+            inferred = infer_trading_dates(df['datetime'])
+            if 'trading_date' not in df.columns:
+                df['trading_date'] = inferred
+            else:
+                source_dates = pd.to_datetime(df['trading_date'], errors='coerce').dt.normalize()
+                df['trading_date'] = source_dates.where(source_dates.notna(), inferred)
+
         if not df.empty:
-            df.to_parquet(cache_path)
+            temporary_path = f"{cache_path}.{os.getpid()}.tmp"
+            try:
+                df.to_parquet(temporary_path)
+                os.replace(temporary_path, cache_path)
+            finally:
+                if os.path.exists(temporary_path):
+                    os.remove(temporary_path)
         return df
 
     def _get_table_info(self, freq: str, data_type: str):

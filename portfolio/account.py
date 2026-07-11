@@ -59,6 +59,8 @@ class Account:
                 'yd_avg_price': 0.0,
                 'td_avg_price': 0.0,
                 'avg_price': 0.0,
+                'yd_frozen_margin': 0.0,
+                'td_frozen_margin': 0.0,
                 'frozen_margin': 0.0,
             }
 
@@ -75,6 +77,13 @@ class Account:
             pos.get('td_avg_price', 0.0), pos.get('td_volume', 0),
         )
 
+    @staticmethod
+    def _sync_position_margin(pos: dict):
+        pos['frozen_margin'] = (
+            float(pos.get('yd_frozen_margin', 0.0) or 0.0)
+            + float(pos.get('td_frozen_margin', 0.0) or 0.0)
+        )
+
     def _normalise_position(self, pos: dict):
         if not pos:
             return
@@ -86,7 +95,16 @@ class Account:
         pos.setdefault('td_volume', 0)
         pos.setdefault('yd_avg_price', legacy_avg if pos.get('yd_volume', 0) > 0 else 0.0)
         pos.setdefault('td_avg_price', legacy_avg if pos.get('td_volume', 0) > 0 else 0.0)
-        pos.setdefault('frozen_margin', 0.0)
+        legacy_margin = float(pos.get('frozen_margin', 0.0) or 0.0)
+        total_volume = int(pos.get('yd_volume', 0) or 0) + int(pos.get('td_volume', 0) or 0)
+        if 'yd_frozen_margin' not in pos and 'td_frozen_margin' not in pos:
+            yd_share = (pos.get('yd_volume', 0) / total_volume) if total_volume > 0 else 0.0
+            pos['yd_frozen_margin'] = legacy_margin * yd_share
+            pos['td_frozen_margin'] = legacy_margin - pos['yd_frozen_margin']
+        else:
+            pos.setdefault('yd_frozen_margin', 0.0)
+            pos.setdefault('td_frozen_margin', 0.0)
+        self._sync_position_margin(pos)
         self._sync_position_avg(pos)
 
     def settle_daily(self, settlement_prices: dict = None):
@@ -122,10 +140,15 @@ class Account:
                 self.available += settlement_pnl
                 self.available += old_margin - new_margin
                 self.frozen_margin = max(0.0, self.frozen_margin - old_margin + new_margin)
-                pos['frozen_margin'] = new_margin
+                pos['yd_frozen_margin'] = new_margin
+                pos['td_frozen_margin'] = 0.0
+                self._sync_position_margin(pos)
                 pos['yd_avg_price'] = settlement_price
             else:
                 pos['yd_avg_price'] = current_avg
+                pos['yd_frozen_margin'] = pos.get('frozen_margin', 0.0)
+                pos['td_frozen_margin'] = 0.0
+                self._sync_position_margin(pos)
 
             pos['yd_volume'] = volume
             pos['td_volume'] = 0
@@ -240,7 +263,8 @@ class Account:
             self.available -= trade.commission
             self.available -= margin_locked
             self.frozen_margin += margin_locked
-            pos['frozen_margin'] = pos.get('frozen_margin', 0.0) + margin_locked
+            pos['td_frozen_margin'] = pos.get('td_frozen_margin', 0.0) + margin_locked
+            self._sync_position_margin(pos)
             return
 
         target_pos_dir = Direction.LONG if trade.direction == Direction.SHORT else Direction.SHORT
@@ -255,13 +279,17 @@ class Account:
             return
 
         if trade.offset == Offset.CLOSE_TODAY:
-            if pos.get('td_volume', 0) < trade.volume:
+            layer_volume = pos.get('td_volume', 0)
+            if layer_volume < trade.volume:
                 return
             open_avg_price = pos.get('td_avg_price', pos['avg_price'])
+            layer_margin_key = 'td_frozen_margin'
         else:
-            if pos.get('yd_volume', 0) < trade.volume:
+            layer_volume = pos.get('yd_volume', 0)
+            if layer_volume < trade.volume:
                 return
             open_avg_price = pos.get('yd_avg_price', pos['avg_price'])
+            layer_margin_key = 'yd_frozen_margin'
 
         self.available -= trade.commission
 
@@ -282,14 +310,12 @@ class Account:
             if pos['yd_volume'] <= 0:
                 pos['yd_avg_price'] = 0.0
 
-        pos_frozen_margin = pos.get(
-            'frozen_margin',
-            open_avg_price * pos_total_before * multiplier * margin_rate
-        )
-        margin_released = pos_frozen_margin * (trade.volume / pos_total_before)
+        layer_margin = float(pos.get(layer_margin_key, 0.0) or 0.0)
+        margin_released = layer_margin * (trade.volume / layer_volume)
         self.available += margin_released
         self.frozen_margin = max(0.0, self.frozen_margin - margin_released)
-        pos['frozen_margin'] = max(0.0, pos_frozen_margin - margin_released)
+        pos[layer_margin_key] = max(0.0, layer_margin - margin_released)
+        self._sync_position_margin(pos)
         self._sync_position_avg(pos)
 
         if self._position_volume(pos) <= 0:

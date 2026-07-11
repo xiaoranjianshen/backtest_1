@@ -234,7 +234,7 @@ FEE_DICT = {
     'fb': {'multiplier': 10, 'tick_size': 0.05, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'lg': {'multiplier': 90, 'tick_size': 0.5, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'bz': {'multiplier': 30, 'tick_size': 1.0, 'margin_rate': 0.12, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
-    'jd': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.00015,'fee_close_history': 0.00015, 'fee_close_today': 0.00015},
+    'jd': {'multiplier': 10, 'tick_size': 1.0, 'margin_rate': 0.09, 'fee_type': 'ratio', 'fee_open': 0.00015,'fee_close_history': 0.00015, 'fee_close_today': 0.00015},
     'lh': {'multiplier': 16, 'tick_size': 5.0, 'margin_rate': 0.10, 'fee_type': 'ratio', 'fee_open': 0.0001,'fee_close_history': 0.0001, 'fee_close_today': 0.0001},
     'l': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},
     'v': {'multiplier': 5, 'tick_size': 1.0, 'margin_rate': 0.10, 'fee_type': 'fixed', 'fee_open': 1.0,'fee_close_history': 1.0, 'fee_close_today': 1.0},

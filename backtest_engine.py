@@ -13,6 +13,7 @@ if current_dir not in sys.path:
     sys.path.append(current_dir)
 
 from data_feed.data_provider import DataProvider
+from data_feed.trading_calendar import fallback_trading_date
 from portfolio.account import Account
 from broker.match_engine import MatchEngine
 from broker.rollover import MainContractRollover
@@ -188,7 +189,7 @@ def _resolve_trading_date(current_time, bar_data: dict):
         if value is None or pd.isna(value):
             continue
         return pd.Timestamp(value).date()
-    return pd.Timestamp(current_time).date()
+    return fallback_trading_date(current_time).date()
 
 
 def _calc_position_exposure(account: Account, current_prices: dict) -> dict:
@@ -221,10 +222,11 @@ def _calc_position_notional(account: Account, current_prices: dict) -> float:
     return _calc_position_exposure(account, current_prices)['position_notional']
 
 
-def _build_equity_record(current_time, account: Account, close_prices: dict) -> dict:
+def _build_equity_record(current_time, trading_date, account: Account, close_prices: dict) -> dict:
     exposure = _calc_position_exposure(account, close_prices)
     return {
         'datetime': current_time,
+        'trading_date': pd.Timestamp(trading_date).normalize(),
         'equity': account.get_total_equity(close_prices),
         **exposure,
     }
@@ -576,7 +578,7 @@ def run_backtest(
             close_prices = _extract_close_prices(bar_data)
             if close_prices:
                 last_close_prices = close_prices
-                equity_records.append(_build_equity_record(current_time, account, close_prices))
+                equity_records.append(_build_equity_record(current_time, current_date, account, close_prices))
     else:
         for current_time, row in df.iterrows():
             bar_data = extract_bar_data(row, columns_level_1)
@@ -602,7 +604,7 @@ def run_backtest(
             close_prices = _extract_close_prices(bar_data)
             if close_prices:
                 last_close_prices = close_prices  # 更新昨收价
-                equity_records.append(_build_equity_record(current_time, account, close_prices))
+                equity_records.append(_build_equity_record(current_time, current_date, account, close_prices))
 
     print("\n" + "=" * 60)
     print(f"[Engine] 时间轴模拟结束 (模拟至 {actual_end})。")

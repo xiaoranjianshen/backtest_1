@@ -13,6 +13,7 @@ from .order import Order, Trade, OrderStatus, Direction, Offset, OrderType
 from .fee_model import FeeModel
 from portfolio.account import Account
 from config import pure_product_code, trade_symbol_code
+from data_feed.trading_calendar import fallback_trading_date
 
 
 class MatchEngine:
@@ -47,12 +48,17 @@ class MatchEngine:
         pos = self.account.positions.get(pos_key)
         if not pos:
             return 0.0
+        self.account._normalise_position(pos)
 
         total_volume = self.account._position_volume(pos)
         if total_volume <= 0:
             return 0.0
 
-        pending_close_volume = 0
+        yd_volume = int(pos.get('yd_volume', 0) or 0)
+        td_volume = int(pos.get('td_volume', 0) or 0)
+        yd_margin = float(pos.get('yd_frozen_margin', 0.0) or 0.0)
+        td_margin = float(pos.get('td_frozen_margin', 0.0) or 0.0)
+        releasable_margin = 0.0
         for pending in self.pending_orders:
             if pending.offset not in (Offset.CLOSE, Offset.CLOSE_TODAY):
                 continue
@@ -60,13 +66,22 @@ class MatchEngine:
                 continue
             if pending.direction != order.direction:
                 continue
-            pending_close_volume += pending.volume
+            if pending.offset == Offset.CLOSE:
+                close_volume = min(int(pending.volume), yd_volume)
+                if close_volume > 0 and yd_volume > 0:
+                    released = yd_margin * (close_volume / yd_volume)
+                    releasable_margin += released
+                    yd_margin -= released
+                    yd_volume -= close_volume
+            else:
+                close_volume = min(int(pending.volume), td_volume)
+                if close_volume > 0 and td_volume > 0:
+                    released = td_margin * (close_volume / td_volume)
+                    releasable_margin += released
+                    td_margin -= released
+                    td_volume -= close_volume
 
-        if pending_close_volume <= 0:
-            return 0.0
-
-        releasable_volume = min(pending_close_volume, total_volume)
-        return pos.get('frozen_margin', 0.0) * (releasable_volume / total_volume)
+        return releasable_margin
 
     def _reserved_cash_for_order(self, order: Order) -> float:
         if order.offset != Offset.OPEN:
@@ -299,7 +314,10 @@ class MatchEngine:
                     volume=order.volume, price=exec_price, trade_time=current_time,
                     commission=commission,
                     slippage_cost=slippage_cost_value,
-                    order_id=order.order_id
+                    order_id=order.order_id,
+                    trading_date=pd.Timestamp(
+                        bar.get('trading_date', fallback_trading_date(current_time))
+                    ).normalize(),
                 )
 
                 order.status = OrderStatus.FILLED
@@ -321,7 +339,8 @@ class MatchEngine:
 
     def execute_rollover(self, symbol: str, pos_direction: Direction, volume: int,
                          old_close_price: float, roll_open_price: float, current_time: datetime,
-                         old_contract: str = "", new_contract: str = ""):
+                         old_contract: str = "", new_contract: str = "",
+                         trading_date=None):
         """
         换月：按昨日收盘价平旧仓，按T日开盘价开新仓
         - old_close_price: 昨日收盘价（用于结算旧仓，捕获T-1日→T日的真实盈亏）
@@ -344,6 +363,7 @@ class MatchEngine:
                 raw_code, close_direction, pos_direction, close_yd,
                 Offset.CLOSE, old_close_price, current_time,
                 old_contract=old_contract, new_contract=new_contract,
+                trading_date=trading_date,
             )
 
         # 再平今仓
@@ -353,6 +373,7 @@ class MatchEngine:
                 raw_code, close_direction, pos_direction, remaining,
                 Offset.CLOSE_TODAY, old_close_price, current_time,
                 old_contract=old_contract, new_contract=new_contract,
+                trading_date=trading_date,
             )
 
         # 换月开新仓等价于系统市价换仓，使用 fee_model 的默认滑点。
@@ -372,6 +393,7 @@ class MatchEngine:
             contract_symbol=new_contract,
             roll_from_contract=old_contract,
             roll_to_contract=new_contract,
+            trading_date=trading_date,
         )
         self.trade_history.append(open_trade)
         account.process_trade(open_trade)
@@ -381,7 +403,8 @@ class MatchEngine:
     def _execute_rollover_close(self, raw_code: str, close_direction: Direction,
                                 pos_direction: Direction, volume: int,
                                 close_offset: Offset, close_price: float, current_time: datetime,
-                                old_contract: str = "", new_contract: str = ""):
+                                old_contract: str = "", new_contract: str = "",
+                                trading_date=None):
         """换月平仓：按昨日收盘价结算，走正常流程"""
         account = self.account
         pos_key = account._get_position_key(raw_code, pos_direction)
@@ -400,6 +423,7 @@ class MatchEngine:
             contract_symbol=old_contract,
             roll_from_contract=old_contract,
             roll_to_contract=new_contract,
+            trading_date=trading_date,
         )
         self.trade_history.append(close_trade)
         account.process_trade(close_trade)

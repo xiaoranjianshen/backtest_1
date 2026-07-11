@@ -72,6 +72,7 @@ class Trade:
     slippage_cost: float  # 这笔交易被滑点吃掉的隐含成本 (仅做统计归因用)
     order_id: str  # 关联的原始订单 ID
     trade_id: str = field(default_factory=lambda: f"TRD_{uuid.uuid4().hex[:8]}")
+    trading_date: Optional[datetime] = None  # 交易所交易日；夜盘归属下一交易日
     is_rollover: bool = False  # 是否为换月产生的成交
     contract_symbol: str = ""  # 实际成交合约；普通主连交易可为空
     roll_from_contract: str = ""  # 换月平仓对应的旧合约

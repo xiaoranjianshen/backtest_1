@@ -26,8 +26,18 @@ class FrontendReportTest(unittest.TestCase):
             freq='1d',
             strategy_name='OfflineReportTest',
             equity_df=pd.DataFrame([
-                {'datetime': datetimes[0], 'trading_date': datetimes[0], 'equity': 1_000_000.0},
-                {'datetime': datetimes[1], 'trading_date': datetimes[1], 'equity': 1_000_100.0},
+                {
+                    'datetime': datetimes[0],
+                    'trading_date': datetimes[0],
+                    'equity': 1_000_000.0,
+                    'margin_used': 10_000.0,
+                },
+                {
+                    'datetime': datetimes[1],
+                    'trading_date': datetimes[1],
+                    'equity': 1_000_100.0,
+                    'margin_used': 0.0,
+                },
             ]),
         )
         analyzer._match_trades_fifo()
@@ -45,6 +55,11 @@ class FrontendReportTest(unittest.TestCase):
         self.assertIn('html2canvas', html)
         self.assertIn('window.jspdf', html)
         self.assertIn('Plotly.newPlot', html)
+        self.assertIn('.xl\\:grid-cols-5', html)
+        self.assertIn('.md\\:grid-cols-3', html)
+        self.assertIn('report-table-scroll', html)
+        self.assertIn('metrics-table', html)
+        self.assertIn('保证金占用率 (Margin Utilization)', html)
 
 
 if __name__ == '__main__':

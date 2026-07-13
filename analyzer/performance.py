@@ -1094,6 +1094,85 @@ class StrategyAnalyzer:
         fig.update_xaxes(**time_axis["layout"])
         return fig.to_html(full_html=False, include_plotlyjs=False)
 
+    def get_margin_utilization_html_div(self):
+        """Plot actual frozen margin as a percentage of mark-to-market equity."""
+        if getattr(self, "equity_df", None) is None or self.equity_df.empty:
+            return "<div class='text-center text-gray-500 py-10'>权益数据不足，无法计算保证金占用率</div>"
+        if "margin_used" not in self.equity_df.columns:
+            return (
+                "<div class='text-center text-gray-500 py-10'>"
+                "当前报告未记录逐 Bar 保证金快照，请重新运行回测后查看"
+                "</div>"
+            )
+
+        frame = self.equity_df.sort_values("datetime").copy()
+        frame["datetime"] = pd.to_datetime(frame["datetime"], errors="coerce")
+        frame["equity"] = pd.to_numeric(frame["equity"], errors="coerce")
+        frame["margin_used"] = pd.to_numeric(frame["margin_used"], errors="coerce").fillna(0.0)
+        frame = frame.dropna(subset=["datetime", "equity"])
+        frame = frame[frame["equity"] > 0].copy()
+        if frame.empty:
+            return "<div class='text-center text-gray-500 py-10'>有效权益数据不足，无法计算保证金占用率</div>"
+
+        frame["margin_utilization"] = (
+            frame["margin_used"].clip(lower=0.0) / frame["equity"]
+        ).clip(lower=0.0)
+
+        if self._should_use_daily_report_resolution(frame["datetime"]):
+            frame["_report_session_date"] = _frame_trading_dates(
+                frame, "datetime", self.freq
+            )
+            peak_indexes = frame.groupby(
+                "_report_session_date", sort=True
+            )["margin_utilization"].idxmax()
+            frame = frame.loc[peak_indexes].sort_values("_report_session_date").copy()
+            frame["datetime"] = frame["_report_session_date"]
+
+        time_axis = _build_continuous_time_axis(frame["datetime"])
+        plot_x, time_labels = _map_to_continuous_time_axis(
+            frame["datetime"], time_axis
+        )
+        custom_data = np.column_stack([
+            time_labels,
+            frame["margin_used"].to_numpy(),
+            frame["equity"].to_numpy(),
+        ])
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=plot_x,
+            y=frame["margin_utilization"],
+            mode="lines",
+            name="保证金占用率",
+            line=dict(color="#2563eb", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(37, 99, 235, 0.12)",
+            customdata=custom_data,
+            hovertemplate=(
+                "时间: %{customdata[0]}"
+                "<br>保证金占用率: %{y:.2%}"
+                "<br>占用保证金: ¥%{customdata[1]:,.0f}"
+                "<br>动态权益: ¥%{customdata[2]:,.0f}<extra></extra>"
+            ),
+        ))
+        fig.update_layout(
+            height=300,
+            margin=REPORT_OVERVIEW_MARGIN,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            hovermode="x unified",
+            showlegend=False,
+            yaxis=dict(
+                title=dict(text="保证金占用率", font=dict(color="#1f2937")),
+                tickfont=dict(color="#1f2937"),
+                tickformat=".1%",
+                rangemode="tozero",
+                gridcolor="#f3f4f6",
+            ),
+        )
+        fig.update_xaxes(**time_axis["layout"])
+        return fig.to_html(full_html=False, include_plotlyjs=False)
+
     def get_leverage_and_position_html_div(self):
         """\u8fd8\u539f\u6bcf\u65e5\u5386\u53f2\u4ed3\u4f4d\u72b6\u6001\uff0c\u751f\u6210\u591a\u7a7a\u6301\u4ed3\u540d\u4e49\u672c\u91d1\u4e0e\u9694\u591c\u6760\u6746\u7387\u53cc\u8f74\u56fe\u3002"""
         if not self.trades or getattr(self, 'equity_df', None) is None or self.equity_df.empty:
@@ -3095,15 +3174,9 @@ class StrategyAnalyzer:
             return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u7ee9\u6548\u6307\u6807</div>"
 
         df = pd.DataFrame(self.metrics_list)
-        # 绩效表列数较多，使用紧凑字号和单元格间距保证首屏�??性�??
-        html = df.to_html(index=False, border=0,
-                          classes="w-full text-[11px] text-center text-gray-700 bg-white antialiased tracking-tighter")
-
-        html = html.replace('<thead>', '<thead class="bg-[#2c3e50] text-white text-[11px] sticky top-0">') \
-            .replace('<th>', '<th class="py-2 px-0.5 font-bold border-r border-[#34495e] whitespace-nowrap">') \
-            .replace('<td>',
-                     '<td class="py-1.5 px-0.5 border-b border-r border-gray-100 font-medium hover:bg-blue-50 transition-colors">')
-        return html
+        # 绩效宽表在卡片内部滚动，避免撑开整个报告页面。
+        html = df.to_html(index=False, border=0, classes="metrics-table")
+        return f'<div class="report-table-scroll">{html}</div>'
 
     def get_params_table_html(self):
         """Build the backtest parameter table."""
@@ -3111,13 +3184,13 @@ class StrategyAnalyzer:
             return ""
         df = pd.DataFrame([self.describe_params])
         html = df.to_html(index=False, border=0,
-                          classes="w-full text-sm text-center text-gray-600 bg-white shadow-sm rounded-lg overflow-hidden")
-        # 移除 pandas 默�?右�?齐样式，保持参数表统�?居中�?
+                          classes="params-table text-sm text-center text-gray-600 bg-white")
+        # 移除 pandas 默认右对齐样式，保持参数表统一居中。
         html = html.replace('<thead>', '<thead class="bg-gray-100 text-gray-700 font-semibold border-b">') \
             .replace('<th>', '<th class="py-3 px-4 text-center">') \
             .replace('<td>', '<td class="py-3 px-4 text-center border-b border-gray-50">') \
             .replace('style="text-align: right;"', '')
-        return html
+        return f'<div class="report-table-scroll">{html}</div>'
 
     def _export_selection_records(self):
         if not self.selection_records:

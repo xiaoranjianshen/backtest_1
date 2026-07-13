@@ -329,6 +329,36 @@ class AnalyzerMetricsTest(unittest.TestCase):
         self.assertIn("多头持仓名义本金", html)
         self.assertIn("空头持仓名义本金", html)
 
+    def test_margin_utilization_chart_uses_recorded_frozen_margin(self):
+        equity_df = pd.DataFrame([
+            {
+                "datetime": "2026-05-07 09:00:00",
+                "equity": 1_000_000.0,
+                "margin_used": 0.0,
+            },
+            {
+                "datetime": "2026-05-07 09:00:01",
+                "equity": 1_000_000.0,
+                "margin_used": 250_000.0,
+            },
+        ])
+        analyzer = StrategyAnalyzer(
+            trades=[],
+            price_df=pd.DataFrame(index=pd.to_datetime(equity_df["datetime"])),
+            initial_capital=1_000_000.0,
+            symbol="MULTI",
+            freq="tick",
+            strategy_name="MarginUtilizationHtmlTestStrategy",
+            equity_df=equity_df,
+        )
+
+        html = analyzer.get_margin_utilization_html_div()
+
+        self.assertIn("保证金占用率", html)
+        self.assertIn("占用保证金", html)
+        self.assertIn('"y":[0.0,0.25]', html)
+        self.assertNotIn("请重新运行回测", html)
+
 
 if __name__ == "__main__":
     unittest.main()

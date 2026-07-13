@@ -108,6 +108,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
     html_fig_nv_bench = analyzer.get_net_value_with_benchmark_html_div()
     html_fig_dd = analyzer.get_rolling_drawdown_html_div()
     html_fig_leverage = analyzer.get_leverage_and_position_html_div()
+    html_fig_margin_utilization = analyzer.get_margin_utilization_html_div()
     html_fig_pnl_bar = analyzer.get_multi_asset_pnl_bar_html_div()
     html_fig_holding_pie = analyzer.get_holding_period_pie_html_div()
     html_fig_turnover_pie = analyzer.get_turnover_pie_html_div()
@@ -226,6 +227,8 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
         <script>{jspdf_js}</script>
         <style>
             /* Self-contained utility styles used by the generated report. */
+            *, *::before, *::after {{ box-sizing: border-box; }}
+            html, body {{ margin: 0; max-width: 100%; overflow-x: hidden; }}
             body {{ background-color: #f3f4f6; }}
             .min-h-screen {{ min-height: 100vh; }}
             .w-full {{ width: 100%; }}
@@ -235,6 +238,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .grid {{ display: grid; }}
             .grid-cols-1 {{ grid-template-columns: minmax(0, 1fr); }}
             .grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+            .grid > * {{ min-width: 0; }}
             .hidden {{ display: none; }}
             .block {{ display: block; }}
             .items-end {{ align-items: flex-end; }}
@@ -242,6 +246,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .justify-between {{ justify-content: space-between; }}
             .justify-center {{ justify-content: center; }}
             .flex-col {{ flex-direction: column; }}
+            .flex-wrap {{ flex-wrap: wrap; }}
             .overflow-hidden {{ overflow: hidden; }}
             .overflow-x-auto {{ overflow-x: auto; }}
             .overflow-y-auto {{ overflow-y: auto; }}
@@ -316,6 +321,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             .rounded-t-lg {{ border-top-left-radius: 0.5rem; border-top-right-radius: 0.5rem; }}
             .border {{ border-width: 1px; border-style: solid; }}
             .border-b {{ border-bottom-width: 1px; border-bottom-style: solid; }}
+            .border-r {{ border-right-width: 1px; border-right-style: solid; }}
             .border-l-4 {{ border-left-width: 4px; border-left-style: solid; }}
             .border-gray-50 {{ border-color: #f9fafb; }}
             .border-gray-100 {{ border-color: #f3f4f6; }}
@@ -363,6 +369,11 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 background: #ffffff;
                 color: #1e3a8a;
             }}
+            .report-tabs {{
+                max-width: 100%;
+                overflow-x: auto;
+                overscroll-behavior-x: contain;
+            }}
             .replay-btn {{
                 background: #f3f4f6;
                 color: #4b5563;
@@ -383,8 +394,88 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 background: #f3f4f6;
                 color: #374151;
             }}
+            .report-table-scroll {{
+                width: 100%;
+                max-width: 100%;
+                overflow-x: auto;
+                overscroll-behavior-x: contain;
+            }}
+            .metrics-table {{
+                width: max-content;
+                min-width: 100%;
+                color: #334155;
+                font-size: 12px;
+                text-align: center;
+            }}
+            .metrics-table th,
+            .metrics-table td {{
+                min-width: 72px;
+                padding: 0.55rem 0.65rem;
+                white-space: nowrap;
+                border-right: 1px solid #e5e7eb;
+            }}
+            .metrics-table th:first-child,
+            .metrics-table td:first-child {{
+                min-width: 88px;
+                position: sticky;
+                left: 0;
+                z-index: 2;
+            }}
+            .metrics-table thead th {{
+                background: #e2e8f0;
+                color: #1e293b;
+                font-weight: 700;
+                line-height: 1.25;
+                z-index: 3;
+            }}
+            .metrics-table tbody td:first-child {{ background: #ffffff; }}
+            .metrics-table tbody tr:hover td {{ background: #f8fafc; }}
+            .params-table {{ min-width: 860px; }}
+            .min-h-\\[330px\\] {{ min-height: 330px; }}
+            .max-h-\\[330px\\] {{ max-height: 330px; }}
+            .max-h-\\[420px\\] {{ max-height: 420px; }}
+            @media (min-width: 768px) {{
+                .md\\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+                .md\\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+                .md\\:flex-row {{ flex-direction: row; }}
+                .md\\:items-center {{ align-items: center; }}
+                .md\\:justify-between {{ justify-content: space-between; }}
+                .md\\:self-auto {{ align-self: auto; }}
+            }}
             @media (min-width: 1280px) {{
                 .xl\\:grid-cols-2 {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+                .xl\\:grid-cols-3 {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+                .xl\\:grid-cols-4 {{ grid-template-columns: repeat(4, minmax(0, 1fr)); }}
+                .xl\\:grid-cols-5 {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+                .xl\\:col-span-2 {{ grid-column: span 2 / span 2; }}
+                .xl\\:flex-row {{ flex-direction: row; }}
+                .xl\\:items-end {{ align-items: flex-end; }}
+                .xl\\:justify-between {{ justify-content: space-between; }}
+            }}
+            @media (max-width: 767px) {{
+                .report-header-inner {{
+                    flex-direction: column;
+                    align-items: stretch;
+                    gap: 0.75rem;
+                }}
+                .report-header-title h1 {{
+                    font-size: 1.5rem;
+                    line-height: 2rem;
+                }}
+                .report-header-actions {{
+                    width: 100%;
+                    align-items: stretch;
+                }}
+                #btn-download-pdf {{ align-self: flex-end; }}
+                .report-tabs {{
+                    width: 100%;
+                    padding-bottom: 0.25rem;
+                }}
+                .report-tabs .tab-btn {{
+                    flex: 0 0 auto;
+                    padding-left: 1rem;
+                    padding-right: 1rem;
+                }}
             }}
             .tab-content {{ display: none; }}
             .tab-content.active {{ display: block; animation: fadeIn 0.3s ease-in-out; }}
@@ -822,16 +913,16 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
     </head>
     <body class="min-h-screen">
         <div class="bg-[#1e3a8a] w-full pt-5 px-6 shadow-lg">
-            <div class="max-w-screen-2xl mx-auto flex justify-between items-end">
-                <div class="text-white pb-4">
+            <div class="report-header-inner max-w-screen-2xl mx-auto flex justify-between items-end">
+                <div class="report-header-title text-white pb-4">
                     <h1 class="text-3xl font-bold tracking-wider">Backtest Report | {analyzer.symbol}</h1>
                     <p class="text-sm text-blue-200 mt-2">引擎生成时间: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')} | 策略: {analyzer.strategy_name}</p>
                 </div>
-                <div class="flex flex-col items-end gap-3">
+                <div class="report-header-actions flex flex-col items-end gap-3">
                     <button id="btn-download-pdf" onclick="downloadAnalysisPdf()" class="bg-white/95 hover:bg-white text-[#1e3a8a] px-5 py-2 rounded-lg text-sm font-bold shadow-sm border border-white/40 transition-colors focus:outline-none">
                         下载PDF报告
                     </button>
-                    <div class="flex space-x-1">
+                    <div class="report-tabs flex space-x-1">
                         <button id="btn-tab-config" onclick="switchTab('tab-config', 'btn-tab-config')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">配置中心 (Configuration)</button>
                         <button id="btn-tab1" onclick="switchTab('tab1', 'btn-tab1')" class="tab-btn bg-white text-[#1e3a8a] font-bold px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none shadow-[0_-2px_10px_rgba(0,0,0,0.1)]">策略总览 (Strategy Overview)</button>
                         <button id="btn-tab2" onclick="switchTab('tab2', 'btn-tab2')" class="tab-btn text-blue-100 hover:bg-white/20 px-8 py-3 rounded-t-lg text-sm transition-all focus:outline-none">交易归因 (Trade Attribution)</button>
@@ -878,6 +969,10 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
                     <h2 class="text-lg font-bold text-gray-800 border-l-4 border-slate-900 pl-3 mb-2">持仓敞口与杠杆率 (Exposure & Leverage)</h2>
                     <div class="w-full">{html_fig_leverage}</div>
+                </div>
+                <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-blue-600 pl-3 mb-2">保证金占用率 (Margin Utilization)</h2>
+                    <div class="w-full">{html_fig_margin_utilization}</div>
                 </div>
             </div> 
 

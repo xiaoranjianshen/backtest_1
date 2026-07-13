@@ -228,6 +228,7 @@ def _build_equity_record(current_time, trading_date, account: Account, close_pri
         'datetime': current_time,
         'trading_date': pd.Timestamp(trading_date).normalize(),
         'equity': account.get_total_equity(close_prices),
+        'margin_used': float(account.frozen_margin),
         **exposure,
     }
 

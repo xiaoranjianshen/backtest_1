@@ -506,6 +506,13 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 let activeBtn = document.getElementById(btnId);
                 activeBtn.classList.remove('text-blue-100', 'hover:bg-white/20');
                 activeBtn.classList.add('bg-white', 'text-[#1e3a8a]', 'font-bold');
+                if (tabId === 'tab-config') {{
+                    const configFrame = document.querySelector('#tab-config .config-frame');
+                    if (configFrame && configFrame.dataset.src && configFrame.dataset.loaded !== '1') {{
+                        configFrame.src = configFrame.dataset.src;
+                        configFrame.dataset.loaded = '1';
+                    }}
+                }}
                 window.dispatchEvent(new Event('resize')); 
                 if (tabId === 'tab1') setTimeout(setupOverviewXAxisSync, 100);
             }}
@@ -563,6 +570,11 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
             }});
             window.addEventListener('hashchange', openTabFromHash);
             window.addEventListener('message', function(event) {{
+                const allowedConfigOrigins = new Set([
+                    'http://localhost:8501',
+                    'http://127.0.0.1:8501'
+                ]);
+                if (!allowedConfigOrigins.has(event.origin)) return;
                 if (!event.data || event.data.type !== 'backtest-report-updated') return;
                 const targetUrl = dashboardUrlForOverview(event.data.url);
                 if (targetUrl) {{
@@ -944,7 +956,7 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
 
             <div id="tab-config" class="tab-content">
                 <div class="bg-white rounded-xl shadow-md border border-gray-100 overflow-hidden">
-                    <iframe class="config-frame" src="http://localhost:8501/?embed=1" title="Backtest Configuration"></iframe>
+                    <iframe class="config-frame" src="about:blank" data-src="http://localhost:8501/?embed=1" title="Backtest Configuration"></iframe>
                 </div>
             </div>
 

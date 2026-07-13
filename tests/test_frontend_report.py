@@ -61,6 +61,10 @@ class FrontendReportTest(unittest.TestCase):
         self.assertIn('metrics-table', html)
         self.assertIn('metrics-table-fit', html)
         self.assertIn('保证金占用率 (Margin Utilization)', html)
+        self.assertIn('src="about:blank"', html)
+        self.assertIn('data-src="http://localhost:8501/?embed=1"', html)
+        self.assertIn("configFrame.dataset.loaded !== '1'", html)
+        self.assertIn("allowedConfigOrigins.has(event.origin)", html)
 
 
 if __name__ == '__main__':

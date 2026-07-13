@@ -88,6 +88,13 @@ class AnalyzerMetricsTest(unittest.TestCase):
         self.assertIn("pnl-curve-sector-toggle", html)
         self.assertIn("data-sector=", html)
         self.assertIn("pnl-curve-mode", html)
+        self.assertIn("plotly_legendclick", html)
+        self.assertIn("legendDatum.groupTitle", html)
+        self.assertIn("return false", html)
+        self.assertIn("const hiddenSymbols = new Set()", html)
+        self.assertIn("rememberSymbolVisibility", html)
+        self.assertIn("legendGroup.startsWith('sector_symbols:')", html)
+        self.assertIn("visible: 'legendonly'", html)
 
     def test_daily_metric_dates_keep_daily_bar_date(self):
         timestamps = pd.Series(pd.to_datetime([

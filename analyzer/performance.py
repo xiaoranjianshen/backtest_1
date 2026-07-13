@@ -1802,62 +1802,121 @@ class StrategyAnalyzer:
           if (!plot) return;
           const traceMeta = {trace_meta_json};
           const hiddenSectors = new Set();
+          const hiddenSymbols = new Set();
           let allTraces = null;
           let baseLayout = null;
           let mode = 'symbols';
-          const renderMode = async () => {{
-            if (!allTraces) {{
-              allTraces = JSON.parse(JSON.stringify(plot.data || []));
-              baseLayout = JSON.parse(JSON.stringify(plot.layout || {{}}));
-            }}
-            if (allTraces.length !== traceMeta.length) return;
-            const expectedKind = mode === 'symbols' ? 'symbol' : 'sector';
-            const selectedTraces = allTraces.filter((_, index) =>
-              traceMeta[index].kind === expectedKind
-            ).map(trace => ({{...JSON.parse(JSON.stringify(trace)), visible: true}}));
-            await Plotly.react(
-              plot,
-              selectedTraces,
-              JSON.parse(JSON.stringify(baseLayout)),
-              {{responsive: true}}
-            );
-            for (const hiddenSector of hiddenSectors) {{
-              const hiddenIndices = (plot.data || [])
-                .map((trace, index) => ({{trace, index}}))
-                .filter(entry => entry.trace.customdata && entry.trace.customdata[0] === hiddenSector)
-                .map(entry => entry.index);
-              if (hiddenIndices.length) {{
-                await Plotly.restyle(plot, {{visible: false}}, hiddenIndices);
+          const clone = value => JSON.parse(JSON.stringify(value));
+          const traceKind = trace => {{
+            const legendGroup = String(trace.legendgroup || '');
+            if (legendGroup.startsWith('sector_symbols:')) return 'symbol';
+            if (legendGroup.startsWith('sector_total:')) return 'sector';
+            return null;
+          }};
+          const rememberSymbolVisibility = () => {{
+            if (mode !== 'symbols') return;
+            (plot.data || []).forEach(trace => {{
+              if (traceKind(trace) !== 'symbol') return;
+              const sector = trace.customdata && trace.customdata[0];
+              const symbol = trace.name;
+              if (!symbol || hiddenSectors.has(sector)) return;
+              if (trace.visible === false || trace.visible === 'legendonly') {{
+                hiddenSymbols.add(symbol);
+              }} else {{
+                hiddenSymbols.delete(symbol);
+              }}
+            }});
+          }};
+          const traceVisibility = meta => {{
+            if (hiddenSectors.has(meta.sector)) return 'legendonly';
+            if (meta.kind === 'symbol' && hiddenSymbols.has(meta.symbol)) return 'legendonly';
+            return true;
+          }};
+          const setSectorHidden = async (sector, hidden) => {{
+            if (!sector) return;
+            rememberSymbolVisibility();
+            if (hidden) hiddenSectors.add(sector);
+            else hiddenSectors.delete(sector);
+            document.querySelectorAll('.pnl-curve-sector-toggle').forEach(button => {{
+              if (button.dataset.sector === sector) {{
+                button.classList.toggle('is-muted', hidden);
+              }}
+            }});
+            const sectorIndices = (plot.data || [])
+              .map((trace, index) => ({{trace, index}}))
+              .filter(entry =>
+                entry.trace.customdata &&
+                entry.trace.customdata[0] === sector &&
+                traceKind(entry.trace) === (mode === 'symbols' ? 'symbol' : 'sector')
+              )
+              .map(entry => entry.index);
+            if (sectorIndices.length) {{
+              if (hidden) {{
+                await Plotly.restyle(plot, {{visible: 'legendonly'}}, sectorIndices);
+              }} else {{
+                await Plotly.restyle(plot, {{visible: true}}, sectorIndices);
+                if (mode === 'symbols') {{
+                  const hiddenSymbolIndices = sectorIndices.filter(index =>
+                    hiddenSymbols.has(plot.data[index].name)
+                  );
+                  if (hiddenSymbolIndices.length) {{
+                    await Plotly.restyle(
+                      plot,
+                      {{visible: 'legendonly'}},
+                      hiddenSymbolIndices
+                    );
+                  }}
+                }}
               }}
             }}
           }};
+          const toggleSector = sector =>
+            setSectorHidden(sector, !hiddenSectors.has(sector));
+          const renderMode = async nextMode => {{
+            rememberSymbolVisibility();
+            if (!allTraces) {{
+              allTraces = clone(plot.data || []);
+              baseLayout = clone(plot.layout || {{}});
+            }}
+            if (allTraces.length !== traceMeta.length) return;
+            mode = nextMode;
+            const expectedKind = mode === 'symbols' ? 'symbol' : 'sector';
+            const selectedTraces = allTraces
+              .map((trace, index) => ({{trace, meta: traceMeta[index]}}))
+              .filter(entry => entry.meta.kind === expectedKind)
+              .map(entry => ({{
+                ...clone(entry.trace),
+                visible: traceVisibility(entry.meta),
+              }}));
+            await Plotly.react(
+              plot,
+              selectedTraces,
+              clone(baseLayout),
+              {{responsive: true}}
+            );
+          }};
           document.querySelectorAll('.pnl-curve-mode').forEach(button => {{
             button.addEventListener('click', async () => {{
-              mode = button.dataset.mode;
               document.querySelectorAll('.pnl-curve-mode').forEach(item =>
                 item.classList.toggle('is-active', item === button)
               );
-              await renderMode();
+              await renderMode(button.dataset.mode);
             }});
           }});
           document.querySelectorAll('.pnl-curve-sector-toggle').forEach(button => {{
             button.addEventListener('click', async () => {{
-              const sector = button.dataset.sector;
-              if (hiddenSectors.has(sector)) hiddenSectors.delete(sector);
-              else hiddenSectors.add(sector);
-              button.classList.toggle('is-muted', hiddenSectors.has(sector));
-              const sectorIndices = (plot.data || [])
-                .map((trace, index) => ({{trace, index}}))
-                .filter(entry => entry.trace.customdata && entry.trace.customdata[0] === sector)
-                .map(entry => entry.index);
-              if (sectorIndices.length) {{
-                await Plotly.restyle(
-                  plot,
-                  {{visible: !hiddenSectors.has(sector)}},
-                  sectorIndices
-                );
-              }}
+              await toggleSector(button.dataset.sector);
             }});
+          }});
+          plot.on('plotly_legendclick', event => {{
+            const legendDatum = event.node && event.node.__data__ && event.node.__data__[0];
+            const groupTitle = legendDatum && legendDatum.groupTitle;
+            const sector = typeof groupTitle === 'string' ? groupTitle : groupTitle && groupTitle.text;
+            if (!sector) return true;
+            toggleSector(sector).catch(error =>
+              console.error('[Report] Failed to toggle sector traces.', error)
+            );
+            return false;
           }});
         }})();
         </script>

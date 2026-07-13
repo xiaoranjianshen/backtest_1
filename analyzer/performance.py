@@ -1144,9 +1144,9 @@ class StrategyAnalyzer:
             y=frame["margin_utilization"],
             mode="lines",
             name="保证金占用率",
-            line=dict(color="#2563eb", width=2),
+            line=dict(color="#d97706", width=2),
             fill="tozeroy",
-            fillcolor="rgba(37, 99, 235, 0.12)",
+            fillcolor="rgba(245, 158, 11, 0.16)",
             customdata=custom_data,
             hovertemplate=(
                 "时间: %{customdata[0]}"
@@ -3174,9 +3174,9 @@ class StrategyAnalyzer:
             return "<div class=\'text-center text-gray-500 py-10\'>\u65e0\u7ee9\u6548\u6307\u6807</div>"
 
         df = pd.DataFrame(self.metrics_list)
-        # 绩效宽表在卡片内部滚动，避免撑开整个报告页面。
+        # 绩效宽表使用紧凑固定列宽，确保所有指标在同一视图内显示。
         html = df.to_html(index=False, border=0, classes="metrics-table")
-        return f'<div class="report-table-scroll">{html}</div>'
+        return f'<div class="metrics-table-fit">{html}</div>'
 
     def get_params_table_html(self):
         """Build the backtest parameter table."""

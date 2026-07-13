@@ -59,6 +59,7 @@ class FrontendReportTest(unittest.TestCase):
         self.assertIn('.md\\:grid-cols-3', html)
         self.assertIn('report-table-scroll', html)
         self.assertIn('metrics-table', html)
+        self.assertIn('metrics-table-fit', html)
         self.assertIn('保证金占用率 (Margin Utilization)', html)
 
 

@@ -401,35 +401,42 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                 overscroll-behavior-x: contain;
             }}
             .metrics-table {{
-                width: max-content;
-                min-width: 100%;
+                width: 100%;
+                table-layout: fixed;
                 color: #334155;
-                font-size: 12px;
+                font-size: 10px;
                 text-align: center;
+                letter-spacing: 0;
             }}
             .metrics-table th,
             .metrics-table td {{
-                min-width: 72px;
-                padding: 0.55rem 0.65rem;
-                white-space: nowrap;
+                min-width: 0;
+                padding: 0.45rem 0.125rem;
                 border-right: 1px solid #e5e7eb;
             }}
             .metrics-table th:first-child,
             .metrics-table td:first-child {{
-                min-width: 88px;
-                position: sticky;
-                left: 0;
-                z-index: 2;
+                width: 86px;
             }}
             .metrics-table thead th {{
                 background: #e2e8f0;
                 color: #1e293b;
                 font-weight: 700;
-                line-height: 1.25;
-                z-index: 3;
+                line-height: 1.15;
+                white-space: normal;
+                overflow-wrap: anywhere;
+            }}
+            .metrics-table tbody td {{
+                white-space: nowrap;
+                overflow: hidden;
             }}
             .metrics-table tbody td:first-child {{ background: #ffffff; }}
             .metrics-table tbody tr:hover td {{ background: #f8fafc; }}
+            .metrics-table-fit {{
+                width: 100%;
+                max-width: 100%;
+                overflow: hidden;
+            }}
             .params-table {{ min-width: 860px; }}
             .min-h-\\[330px\\] {{ min-height: 330px; }}
             .max-h-\\[330px\\] {{ max-height: 330px; }}
@@ -971,7 +978,8 @@ def build_html_dashboard(analyzer, open_browser=True, start_config_ui=True):
                     <div class="w-full">{html_fig_leverage}</div>
                 </div>
                 <div class="bg-white rounded-xl shadow-md border border-gray-100 p-4">
-                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-blue-600 pl-3 mb-2">保证金占用率 (Margin Utilization)</h2>
+                    <h2 class="text-lg font-bold text-gray-800 border-l-4 border-orange-500 pl-3 mb-2">保证金占用率 (Margin Utilization)</h2>
+                    <p class="text-xs text-gray-500 pl-3 mb-2">实际冻结保证金 ÷ 动态权益；通常与杠杆率同向，但会按持仓品种的加权保证金率缩放。</p>
                     <div class="w-full">{html_fig_margin_utilization}</div>
                 </div>
             </div> 
